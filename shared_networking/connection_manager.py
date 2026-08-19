@@ -2,10 +2,17 @@
 #  AETHER CONSOLE — CONNECTION MANAGER
 #  Manages the TCP socket lifecycle for pub-sub clients.
 #  Handles connect, disconnect, auto-reconnect, heartbeat,
-#  background receive thread, packet statistics, and encryption stats.
+#  background receive thread, and packet statistics.
+#
+#  Security (v2):
+#    All transport-level encryption is TLS 1.3 at the socket layer.
+#    Application-level Fernet encryption has been removed.
+#    The client wraps its socket with a device-specific TLS context
+#    before sending any data. Certificate verification is always on.
 # ═══════════════════════════════════════════════════════════════════
 
 import socket
+import ssl
 import time
 import threading
 import logging
@@ -16,17 +23,30 @@ from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 from shared_networking.config import (
     BROKER_HOST, BROKER_PORT,
     HEARTBEAT_INTERVAL_S, RECONNECT_INTERVAL_S, MAX_RECONNECT_ATTEMPTS,
-    HEADER_SIZE,
+    HEADER_SIZE, CERTS_DIR,
 )
 from shared_networking.protocol import (
-    encode_message, decode_header, decode_payload,
+    encode_message_full, decode_header, decode_payload_full,
     create_heartbeat, create_handshake, create_subscribe,
     create_unsubscribe, create_client_list_request,
     CTRL_HEARTBEAT, CTRL_CLIENT_UPDATE, CTRL_CLIENT_LIST,
+    CTRL_AUTH_REJECT,
     is_control_message,
 )
+from shared_networking.tls import TLSManager
 
 log = logging.getLogger(__name__)
+
+
+def _get_tls_context(client_name: str) -> ssl.SSLContext:
+    """Return a strict TLS 1.3 client context for the named device.
+
+    Raises RuntimeError if the device certificate is missing (not yet
+    provisioned) so the connection attempt fails with a clear error
+    instead of silently connecting without encryption.
+    """
+    tls = TLSManager(CERTS_DIR)
+    return tls.create_client_context(client_name)
 
 
 class ConnectionManager(QObject):
@@ -44,6 +64,8 @@ class ConnectionManager(QObject):
     log_message = pyqtSignal(str, str)          # (level, message)
     stats_updated = pyqtSignal(dict)
     message_received = pyqtSignal(str, dict)    # (topic, full_message)
+    raw_data_sent = pyqtSignal(dict, bytes, bytes)      # (message, plaintext, encrypted)
+    raw_data_received = pyqtSignal(dict, bytes, bytes)  # (message, plaintext, encrypted)
     client_list_received = pyqtSignal(list)     # list of client dicts
 
     # Private signals for thread safety
@@ -180,8 +202,13 @@ class ConnectionManager(QObject):
                               f"Connecting to broker {self._host}:{self._port}...")
 
         try:
-            self._socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self._socket.settimeout(5.0)
+            # Build raw TCP socket and wrap with TLS 1.3 before any data flows
+            raw_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            raw_sock.settimeout(5.0)
+
+            tls_ctx = _get_tls_context(self._client_name)
+            self._socket = tls_ctx.wrap_socket(
+                raw_sock, server_hostname=None)
             self._socket.connect((self._host, self._port))
             self._socket.settimeout(None)
 
@@ -190,6 +217,7 @@ class ConnectionManager(QObject):
             self._connect_time = datetime.now()
 
             # Send handshake with auth context
+            # NOTE: broker never trusts client-provided role
             handshake = create_handshake(
                 self._client_name,
                 self._publish_topics,
@@ -217,7 +245,7 @@ class ConnectionManager(QObject):
 
             self.connected.emit()
             self.log_message.emit("INFO",
-                                  f"Connected to broker {self._host}:{self._port}")
+                                  f"Connected to broker {self._host}:{self._port} (TLS 1.3)")
             self._emit_stats()
 
         except Exception as e:
@@ -289,7 +317,7 @@ class ConnectionManager(QObject):
         self._auto_reconnect_enabled = enabled
 
     def get_stats(self) -> dict:
-        """Return current connection statistics including encryption info."""
+        """Return current connection statistics."""
         uptime = "---"
         if self._connect_time and self._is_connected:
             delta = datetime.now() - self._connect_time
@@ -297,10 +325,13 @@ class ConnectionManager(QObject):
             hours, mins = divmod(mins, 60)
             uptime = f"{hours:02d}:{mins:02d}:{secs:02d}"
 
-        # Fetch encryption stats
-        from shared_networking.encryption import EncryptionManager
-        em = EncryptionManager.instance()
-        enc_stats = em.get_stats()
+        # Detect active TLS version from the live socket
+        tls_version = "---"
+        if self._socket and self._is_connected:
+            try:
+                tls_version = self._socket.version() or "---"
+            except Exception:
+                pass
 
         return {
             "is_connected": self._is_connected,
@@ -323,11 +354,11 @@ class ConnectionManager(QObject):
             "username": self._username,
             "role": self._role,
             "session_id": self._session_id,
-            # Encryption
-            "encryption_enabled": enc_stats["encryption_enabled"],
-            "encryption_algorithm": enc_stats["algorithm"],
-            "encryption_errors": enc_stats["encryption_errors"],
-            "decryption_errors": enc_stats["decryption_errors"],
+            # Transport security
+            "encryption_enabled": True,
+            "encryption_algorithm": f"TLS ({tls_version})",
+            "encryption_errors": 0,
+            "decryption_errors": 0,
         }
 
     def cleanup(self):
@@ -346,9 +377,11 @@ class ConnectionManager(QObject):
             return
 
         try:
-            data = encode_message(message)
+            data, plaintext_bytes, encrypted_bytes = encode_message_full(message)
             with self._lock:
                 self._socket.sendall(data)
+                
+            self.raw_data_sent.emit(message, plaintext_bytes, encrypted_bytes)
 
             self._packets_sent += 1
             self._bytes_sent += len(data)
@@ -372,16 +405,17 @@ class ConnectionManager(QObject):
         """Background thread: continuously receive data from broker."""
         while self._running and self._socket:
             try:
-                header = self._recv_exact(HEADER_SIZE)
+                header = self._recv_exact(self._socket, HEADER_SIZE)
                 if header is None:
                     break
 
                 payload_len = decode_header(header)
-                payload_bytes = self._recv_exact(payload_len)
+                payload_bytes = self._recv_exact(self._socket, payload_len)
                 if payload_bytes is None:
                     break
 
-                message = decode_payload(payload_bytes)
+                message, plaintext_bytes, encrypted_bytes = decode_payload_full(payload_bytes)
+                self.raw_data_received.emit(message, plaintext_bytes, encrypted_bytes)
                 self._packets_received += 1
                 self._bytes_received += HEADER_SIZE + payload_len
                 self._last_received_time = (
@@ -396,6 +430,13 @@ class ConnectionManager(QObject):
                     clients = message.get("payload", {}).get("clients", [])
                     self.client_list_received.emit(clients)
                     continue
+                elif topic == CTRL_AUTH_REJECT:
+                    reason = message.get("payload", {}).get("reason", "Auth rejected")
+                    self.log_message.emit("ERROR", f"Broker rejected connection: {reason}")
+                    self.error_occurred.emit(f"Auth rejected: {reason}")
+                    # Disconnect — do not reconnect on auth rejection
+                    self._auto_reconnect_enabled = False
+                    break
 
                 # Emit data message
                 self.message_received.emit(topic, message)
@@ -410,23 +451,42 @@ class ConnectionManager(QObject):
         if self._running:
             self._handle_connection_lost()
 
-    def _recv_exact(self, num_bytes: int):
-        """Read exactly num_bytes from the socket."""
-        data = b""
-        while len(data) < num_bytes:
+    @staticmethod
+    def _recv_exact(conn, num_bytes: int):
+        """Read exactly num_bytes from a socket.
+
+        Uses a pre-allocated bytearray + memoryview to avoid O(n²)
+        copying that occurs with bytes concatenation for large payloads.
+        Returns bytes on success, None if the connection was closed.
+        """
+        if num_bytes == 0:
+            return b""
+        buf = bytearray(num_bytes)
+        view = memoryview(buf)
+        received = 0
+        while received < num_bytes:
             try:
-                chunk = self._socket.recv(num_bytes - len(data))
-                if not chunk:
+                n = conn.recv_into(view[received:], num_bytes - received)
+                if not n:
                     return None
-                data += chunk
+                received += n
             except (ConnectionResetError, ConnectionAbortedError, OSError):
                 return None
-        return data
+        return bytes(buf)
 
     # ─── Internal: Connection Management ──────────────────────────
 
+    def _log_warning(self, msg: str):
+        """Emit a warning log message."""
+        self.log_message.emit("WARNING", msg)
+
     def _do_disconnect(self):
-        """Internal disconnect without logging or auto-reconnect logic."""
+        """Internal disconnect without logging or auto-reconnect logic.
+
+        Sequences: set _running=False → close socket → join receive thread.
+        Joining the receive thread (with a timeout) ensures the thread
+        exits cleanly and does not become a zombie on shutdown.
+        """
         was_connected = self._is_connected
         self._running = False
         self._is_connected = False
@@ -442,6 +502,15 @@ class ConnectionManager(QObject):
             except Exception:
                 pass
             self._socket = None
+
+        # Join the receive thread so it does not linger after disconnect.
+        # Use a timeout to avoid blocking the caller indefinitely if the
+        # thread is stuck in a kernel call that doesn't respond to socket close.
+        if self._receive_thread and self._receive_thread.is_alive():
+            self._receive_thread.join(timeout=3.0)
+            if self._receive_thread.is_alive():
+                self._log_warning("Receive thread did not exit cleanly after disconnect")
+        self._receive_thread = None
 
         if was_connected:
             self.disconnected.emit()

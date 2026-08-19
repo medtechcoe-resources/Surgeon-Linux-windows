@@ -140,11 +140,11 @@ class Header(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("Header")
-        self.setFixedHeight(72)
+        self.setFixedHeight(58)
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(24, 0, 24, 0)
-        layout.setSpacing(16)
+        layout.setContentsMargins(20, 0, 20, 0)
+        layout.setSpacing(12)
 
         # ── Brand ──
         badge = _LogoBadge()

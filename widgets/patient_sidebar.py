@@ -51,8 +51,8 @@ class SidebarCard(QFrame):
         super().__init__(parent)
         self.setObjectName("SidebarCard")
         self.layout = QVBoxLayout(self)
-        self.layout.setContentsMargins(18, 14, 18, 14)
-        self.layout.setSpacing(8)
+        self.layout.setContentsMargins(14, 10, 14, 10)
+        self.layout.setSpacing(6)
         t = QLabel(title.upper())
         t.setObjectName("SidebarSectionTitle")
         self.layout.addWidget(t)
@@ -69,7 +69,7 @@ class PatientSidebar(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedWidth(310)
+        self.setFixedWidth(290)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -78,22 +78,21 @@ class PatientSidebar(QWidget):
 
         container = QWidget()
         layout = QVBoxLayout(container)
-        layout.setContentsMargins(0, 12, 0, 12)
-        layout.setSpacing(10)
+        layout.setContentsMargins(0, 8, 0, 8)
+        layout.setSpacing(8)
 
         # --- Patient Information card ---
         patient_card = SidebarCard("Patient Information")
         header = QHBoxLayout()
         avatar = QLabel("MK")
         avatar.setObjectName("PatientAvatar")
-        avatar.setFixedSize(48, 48)
+        avatar.setFixedSize(42, 42)
         avatar.setAlignment(Qt.AlignmentFlag.AlignCenter)
         header.addWidget(avatar)
         name_box = QVBoxLayout()
-        name_box.setSpacing(3)
+        name_box.setSpacing(2)
         name = QLabel("Marisa K\u00F6hler")
         name.setObjectName("PatientName")
-        name.setStyleSheet("font-size: 20px;")
         meta = QLabel("MRN  \u00B7  0048-23119")
         meta.setObjectName("PatientMeta")
         name_box.addWidget(name)

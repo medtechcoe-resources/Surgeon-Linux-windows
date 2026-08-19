@@ -8,8 +8,11 @@ import os
 import queue
 import threading
 import time
+import logging
 
-from PyQt6.QtCore import QObject, pyqtSignal, QTimer
+log = logging.getLogger(__name__)
+
+from PyQt6.QtCore import QObject, pyqtSignal, QTimer, Qt
 from PyQt6.QtGui import QImage, QPainter, QColor, QPen, QFont
 
 # Optional dependencies — graceful degradation
@@ -280,7 +283,8 @@ class YoloPipeline(QObject):
                 for d in detections:
                     stats.class_counts[d.class_name] = stats.class_counts.get(d.class_name, 0) + 1
 
-            except Exception:
+            except Exception as e:
+                log.warning(f"YOLO inference error: {e}")
                 stats.inference_ms = (time.time() - inference_start) * 1000
 
         # Calculate FPS

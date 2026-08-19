@@ -421,7 +421,7 @@ class LiveControlScreen(QWidget):
         telem.add_layout(footer)
 
         left.addWidget(telem, 1)
-        outer.addLayout(left, 30)
+        outer.addLayout(left, 25)
 
         # ══════════════════════════════════════════════
         #  CENTER COLUMN (~40%) — 3DOF Robot Simulator
@@ -429,11 +429,12 @@ class LiveControlScreen(QWidget):
         center = QVBoxLayout()
         center.setSpacing(10)
 
-        sim_header = QLabel("3DOF ROBOT SIMULATOR")
+        sim_header = QLabel("ROBOT VISUALIZATION")
         sim_header.setObjectName("SectionTitle")
         center.addWidget(sim_header)
 
         self.robot = RobotSimulator()
+        self.robot.setMinimumSize(300, 500)
         center.addWidget(self.robot, 1)
 
         # Stat row under sim
@@ -452,7 +453,7 @@ class LiveControlScreen(QWidget):
             stat_row.addStretch()
         center.addLayout(stat_row)
 
-        outer.addLayout(center, 40)
+        outer.addLayout(center, 50)
 
         # ══════════════════════════════════════════════
         #  RIGHT COLUMN (~30%) — Joint + Robot Controls
@@ -549,7 +550,7 @@ class LiveControlScreen(QWidget):
         right.addWidget(alerts)
 
         right.addStretch()
-        outer.addLayout(right, 30)
+        outer.addLayout(right, 25)
 
     # ── Robot Control Handlers ─────────────────────────────────────
 

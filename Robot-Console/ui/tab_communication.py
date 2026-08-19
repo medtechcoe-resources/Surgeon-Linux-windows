@@ -194,55 +194,95 @@ class CommunicationTab(QWidget):
 
         main_layout.addLayout(top_layout)
 
-        # ── MIDDLE: JSON Viewer ───────────────────────────────────
+        # ── MIDDLE: JSON / ENCRYPTION VIEWER ──────────────────────────
         main_layout.addWidget(SectionHeader(
-            "JSON VIEWER", C["violet"]))
+            "MESSAGE VIEWER (ENCRYPTION DEMO)", C["violet"]))
 
         json_layout = QHBoxLayout()
         json_layout.setSpacing(6)
 
-        # Last Sent JSON
+        # Sent Data Viewer
         sent_widget = QWidget()
         sw_layout = QVBoxLayout(sent_widget)
         sw_layout.setContentsMargins(0, 0, 0, 0)
         sw_layout.setSpacing(2)
 
-        sent_hdr = QLabel("  LAST SENT JSON")
+        sent_hdr = QLabel("  SENT DATA (OUT)")
         sent_hdr.setFont(QFont("Consolas", 18, QFont.Weight.Bold))
         sent_hdr.setStyleSheet(
-            f"color: {C['cyan']}; background-color: {C['bg3']};"
-            f" padding: 8px;")
+            f"color: {C['cyan']}; background-color: {C['bg3']}; padding: 8px;")
         sw_layout.addWidget(sent_hdr)
-
+        
+        sent_splitter = QSplitter(Qt.Orientation.Vertical)
+        
+        # Sent: Plaintext
+        sent_plain_widget = QWidget()
+        spw_layout = QVBoxLayout(sent_plain_widget)
+        spw_layout.setContentsMargins(0,0,0,0)
+        spw_layout.addWidget(QLabel("Plaintext (JSON):"))
         self._sent_json = QTextEdit()
         self._sent_json.setReadOnly(True)
-        self._sent_json.setFont(QFont("Consolas", 18))
+        self._sent_json.setFont(QFont("Consolas", 14))
         self._sent_json.setPlaceholderText("No data sent yet...")
-        self._sent_json.setMaximumHeight(300)
-        sw_layout.addWidget(self._sent_json)
-
+        spw_layout.addWidget(self._sent_json)
+        sent_splitter.addWidget(sent_plain_widget)
+        
+        # Sent: Encrypted
+        sent_enc_widget = QWidget()
+        sew_layout = QVBoxLayout(sent_enc_widget)
+        sew_layout.setContentsMargins(0,0,0,0)
+        sew_layout.addWidget(QLabel("Encrypted (Hex):"))
+        self._sent_enc = QTextEdit()
+        self._sent_enc.setReadOnly(True)
+        self._sent_enc.setFont(QFont("Consolas", 12))
+        self._sent_enc.setStyleSheet(f"color: {C['cyan']};")
+        self._sent_enc.setPlaceholderText("Waiting for encryption...")
+        sew_layout.addWidget(self._sent_enc)
+        sent_splitter.addWidget(sent_enc_widget)
+        
+        sw_layout.addWidget(sent_splitter)
         json_layout.addWidget(sent_widget, stretch=1)
 
-        # Last Received JSON
+        # Received Data Viewer
         recv_widget = QWidget()
         rw_layout = QVBoxLayout(recv_widget)
         rw_layout.setContentsMargins(0, 0, 0, 0)
         rw_layout.setSpacing(2)
 
-        recv_hdr = QLabel("  LAST RECEIVED JSON")
+        recv_hdr = QLabel("  RECEIVED DATA (IN)")
         recv_hdr.setFont(QFont("Consolas", 18, QFont.Weight.Bold))
         recv_hdr.setStyleSheet(
-            f"color: {C['green']}; background-color: {C['bg3']};"
-            f" padding: 8px;")
+            f"color: {C['green']}; background-color: {C['bg3']}; padding: 8px;")
         rw_layout.addWidget(recv_hdr)
 
+        recv_splitter = QSplitter(Qt.Orientation.Vertical)
+        
+        # Received: Encrypted
+        recv_enc_widget = QWidget()
+        rew_layout = QVBoxLayout(recv_enc_widget)
+        rew_layout.setContentsMargins(0,0,0,0)
+        rew_layout.addWidget(QLabel("Encrypted (Hex):"))
+        self._recv_enc = QTextEdit()
+        self._recv_enc.setReadOnly(True)
+        self._recv_enc.setFont(QFont("Consolas", 12))
+        self._recv_enc.setStyleSheet(f"color: {C['green']};")
+        self._recv_enc.setPlaceholderText("Waiting for data...")
+        rew_layout.addWidget(self._recv_enc)
+        recv_splitter.addWidget(recv_enc_widget)
+        
+        # Received: Decrypted
+        recv_dec_widget = QWidget()
+        rdw_layout = QVBoxLayout(recv_dec_widget)
+        rdw_layout.setContentsMargins(0,0,0,0)
+        rdw_layout.addWidget(QLabel("Decrypted (JSON):"))
         self._recv_json = QTextEdit()
         self._recv_json.setReadOnly(True)
-        self._recv_json.setFont(QFont("Consolas", 18))
+        self._recv_json.setFont(QFont("Consolas", 14))
         self._recv_json.setPlaceholderText("No data received yet...")
-        self._recv_json.setMaximumHeight(300)
-        rw_layout.addWidget(self._recv_json)
-
+        rdw_layout.addWidget(self._recv_json)
+        recv_splitter.addWidget(recv_dec_widget)
+        
+        rw_layout.addWidget(recv_splitter)
         json_layout.addWidget(recv_widget, stretch=1)
 
         main_layout.addLayout(json_layout)
@@ -321,12 +361,28 @@ class CommunicationTab(QWidget):
             self._host_input.setEnabled(True)
             self._port_input.setEnabled(True)
 
+    def update_raw_sent(self, message: dict, plaintext: bytes, encrypted: bytes):
+        """Update the sent data viewer (plaintext + encrypted)."""
+        self._sent_json.setPlainText(format_json_pretty(message))
+        if encrypted:
+            self._sent_enc.setPlainText(encrypted.hex(" "))
+        else:
+            self._sent_enc.setPlainText(plaintext.hex(" ") + "\n(Unencrypted)")
+
+    def update_raw_received(self, message: dict, plaintext: bytes, encrypted: bytes):
+        """Update the received data viewer (encrypted + plaintext)."""
+        self._recv_json.setPlainText(format_json_pretty(message))
+        if encrypted:
+            self._recv_enc.setPlainText(encrypted.hex(" "))
+        else:
+            self._recv_enc.setPlainText(plaintext.hex(" ") + "\n(Unencrypted)")
+
     def update_sent_json(self, message: dict):
-        """Update the last-sent JSON viewer."""
+        """Legacy update."""
         self._sent_json.setPlainText(format_json_pretty(message))
 
     def update_received_json(self, message: dict):
-        """Update the last-received JSON viewer."""
+        """Legacy update."""
         self._recv_json.setPlainText(format_json_pretty(message))
 
     def update_stats(self, stats: dict):

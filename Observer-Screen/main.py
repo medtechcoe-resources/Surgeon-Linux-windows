@@ -12,10 +12,10 @@ from PyQt6.QtWidgets import QApplication
 from ui.main_window import MainWindow
 from styles import generate_stylesheet
 
-from shared_networking.encryption import EncryptionManager
+from shared_networking.database import AetherDatabase
 from shared_networking.authentication import AuthManager
 from shared_networking.login_dialog import LoginDialog
-from shared_networking.config import ENCRYPTION_KEY_PATH
+from shared_networking.config import DATABASE_PATH
 
 
 def main():
@@ -25,16 +25,29 @@ def main():
     # Apply stylesheet
     app.setStyleSheet(generate_stylesheet())
 
-    # ── Initialize Encryption ─────────────────────────────────
-    em = EncryptionManager.instance()
-    if not em.load_key(ENCRYPTION_KEY_PATH):
-        EncryptionManager.generate_key(ENCRYPTION_KEY_PATH)
-        em.load_key(ENCRYPTION_KEY_PATH)
+    # ── Initialize Security Database ──────────────────────────────
+    db = AetherDatabase.instance()
+    if not db.open(DATABASE_PATH):
+        from PyQt6.QtWidgets import QMessageBox
+        QMessageBox.critical(
+            None, "Security Error",
+            "Cannot open security database.\n"
+            "Please run 'python broker.py --provision' first.",
+        )
+        sys.exit(1)
 
-    # ── Initialize Authentication ─────────────────────────────
+    # ── Initialize Authentication ─────────────────────────────────
     auth = AuthManager()
+    if not auth.is_provisioned():
+        from PyQt6.QtWidgets import QMessageBox
+        QMessageBox.critical(
+            None, "Not Provisioned",
+            "No user accounts exist.\n"
+            "Please run 'python broker.py --provision' first.",
+        )
+        sys.exit(1)
 
-    # ── Show Login Dialog ─────────────────────────────────────
+    # ── Show Login Dialog ─────────────────────────────────────────
     login = LoginDialog(
         title="Observer Screen — Login",
         auth_manager=auth,
@@ -42,7 +55,7 @@ def main():
     if login.exec() != LoginDialog.DialogCode.Accepted:
         sys.exit(0)
 
-    # ── Launch Main Window ────────────────────────────────────
+    # ── Launch Main Window ────────────────────────────────────────
     window = MainWindow(
         username=login.username,
         role=login.role,

@@ -1,5 +1,8 @@
 import sys
 import os
+import logging
+
+log = logging.getLogger(__name__)
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -21,10 +24,10 @@ from screens.settings import SettingsScreen
 from screens.comm_center import CommCenterScreen
 
 from shared_networking.connection_manager import ConnectionManager
-from shared_networking.encryption import EncryptionManager
+from shared_networking.database import AetherDatabase
 from shared_networking.authentication import AuthManager
 from shared_networking.login_dialog import LoginDialog
-from shared_networking.config import ENCRYPTION_KEY_PATH
+from shared_networking.config import DATABASE_PATH
 
 
 class AetherConsole(QMainWindow):
@@ -64,7 +67,7 @@ class AetherConsole(QMainWindow):
 
         self.stack = QStackedWidget()
         self.preop = PreopPlanningScreen()
-        self.live_video = LiveVideoScreen()
+        self.live_video = LiveVideoScreen(mode="surgeon")
         self.live_control = LiveControlScreen()
         self.settings = SettingsScreen(
             username=username, role=role, auth_manager=auth_manager)
@@ -100,6 +103,7 @@ class AetherConsole(QMainWindow):
                 "patient_vitals",
                 "robot_telemetry", "alerts",
                 "connection_status", "system_status",
+                "video_broadcast",
             ],
             username=username,
             role=role,
@@ -115,8 +119,27 @@ class AetherConsole(QMainWindow):
         if auth_manager:
             self.settings.set_auth_context(auth_manager, username, role)
 
+        # Wire Live Video to connection manager
+        self.live_video.set_connection_manager(self._conn_manager)
+
+        # Route messages to appropriate screens
+        self._conn_manager.message_received.connect(self._on_message_received)
+
         # Auto-connect to broker on startup
         self._conn_manager.connect_to_broker()
+
+    def _on_message_received(self, topic: str, payload: dict):
+        if topic == "video_broadcast":
+            import base64
+            from PyQt6.QtGui import QImage
+            try:
+                b64 = payload.get("frame", "")
+                if b64:
+                    data = base64.b64decode(b64)
+                    img = QImage.fromData(data)
+                    self.live_video.update_frame(img)
+            except Exception as e:
+                log.warning(f"Video frame decode error: {e}")
 
     def closeEvent(self, event):
         """Clean up networking on window close."""
@@ -131,15 +154,27 @@ def main():
     tm = ThemeManager.instance()
     tm.apply_initial()
 
-    # ── Initialize Encryption ─────────────────────────────────
-    em = EncryptionManager.instance()
-    if not em.load_key(ENCRYPTION_KEY_PATH):
-        # Auto-generate key if not found
-        EncryptionManager.generate_key(ENCRYPTION_KEY_PATH)
-        em.load_key(ENCRYPTION_KEY_PATH)
+    # ── Initialize Security Database ─────────────────────────────
+    db = AetherDatabase.instance()
+    if not db.open(DATABASE_PATH):
+        from PyQt6.QtWidgets import QMessageBox
+        QMessageBox.critical(
+            None, "Security Error",
+            "Cannot open security database.\n"
+            "Please run 'python broker.py --provision' first.",
+        )
+        sys.exit(1)
 
     # ── Initialize Authentication ─────────────────────────────
     auth = AuthManager()
+    if not auth.is_provisioned():
+        from PyQt6.QtWidgets import QMessageBox
+        QMessageBox.critical(
+            None, "Not Provisioned",
+            "No user accounts exist.\n"
+            "Please run 'python broker.py --provision' first.",
+        )
+        sys.exit(1)
 
     # ── Show Login Dialog ─────────────────────────────────────
     login = LoginDialog(

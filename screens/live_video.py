@@ -37,8 +37,9 @@ class _DetectRow(QWidget):
 
     def __init__(self, label: str, value: str = "--", parent=None):
         super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(0, 4, 0, 4)
+        lay.setContentsMargins(0, 3, 0, 3)
         lay.setSpacing(8)
 
         self._lbl = QLabel(label.upper())
@@ -76,11 +77,12 @@ class _SliderRow(QWidget):
     def __init__(self, label: str, min_val: int, max_val: int, default: int = 0,
                  unit: str = "\u00B0", parent=None):
         super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self._unit = unit
 
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(0, 4, 0, 4)
-        lay.setSpacing(4)
+        lay.setContentsMargins(0, 2, 0, 2)
+        lay.setSpacing(2)
 
         header = QHBoxLayout()
         lbl = QLabel(label)
@@ -225,6 +227,7 @@ class _FeedCanvas(QFrame):
         self._pan_offset = QPointF(0, 0)
         self._drag_start = None
         self._drag_offset_start = QPointF(0, 0)
+        self.mode = "robot"
         self.setMouseTracking(True)
         tm = ThemeManager.instance()
         tm.theme_changed.connect(lambda _: self.update())
@@ -324,7 +327,8 @@ class _FeedCanvas(QFrame):
             p.setPen(muted)
             font = QFont("Inter", 16, QFont.Weight.DemiBold)
             p.setFont(font)
-            p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "NO VIDEO SOURCE")
+            text = "WAITING FOR BROADCAST" if self.mode == "surgeon" else "NO VIDEO SOURCE"
+            p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, text)
 
         p.end()
 
@@ -477,8 +481,10 @@ class LiveVideoScreen(QWidget):
     ZOOM_MAX = 3.0
     ZOOM_STEP = 0.2
 
-    def __init__(self, parent=None):
+    def __init__(self, mode="surgeon", parent=None):
         super().__init__(parent)
+        self.mode = mode
+        self.broadcaster = None
         self.zoom = self.ZOOM_MIN
 
         # YOLO Pipeline
@@ -494,8 +500,8 @@ class LiveVideoScreen(QWidget):
         self._detect_time_ms = 0.0
 
         outer = QHBoxLayout(self)
-        outer.setContentsMargins(0, 14, 0, 0)
-        outer.setSpacing(14)
+        outer.setContentsMargins(0, 10, 0, 0)
+        outer.setSpacing(10)
 
         # ══════════════════════════════════════════
         #  LEFT PANEL (~18%)
@@ -509,8 +515,8 @@ class LiveVideoScreen(QWidget):
 
         left_widget = QWidget()
         left = QVBoxLayout(left_widget)
-        left.setContentsMargins(0, 0, 8, 0)
-        left.setSpacing(10)
+        left.setContentsMargins(0, 0, 6, 0)
+        left.setSpacing(6)
 
         # ─ Detection Summary ─
         left.addWidget(_section_label("DETECTION SUMMARY"))
@@ -518,8 +524,8 @@ class LiveVideoScreen(QWidget):
         detect_card = QFrame()
         detect_card.setObjectName("Card")
         detect_layout = QVBoxLayout(detect_card)
-        detect_layout.setContentsMargins(16, 14, 16, 14)
-        detect_layout.setSpacing(2)
+        detect_layout.setContentsMargins(12, 10, 12, 10)
+        detect_layout.setSpacing(0)
 
         self._d_name   = _DetectRow("Instrument Name", "--")
         self._d_conf   = _DetectRow("Confidence", "--")
@@ -542,8 +548,8 @@ class LiveVideoScreen(QWidget):
         slider_card = QFrame()
         slider_card.setObjectName("Card")
         slider_layout = QVBoxLayout(slider_card)
-        slider_layout.setContentsMargins(16, 14, 16, 14)
-        slider_layout.setSpacing(6)
+        slider_layout.setContentsMargins(12, 10, 12, 10)
+        slider_layout.setSpacing(4)
 
         self._s_jaw   = _SliderRow("Jaw",   0,    100,   0, "\u00B0")
         self._s_pitch = _SliderRow("Pitch", -45,  45,    0, "\u00B0")
@@ -559,11 +565,19 @@ class LiveVideoScreen(QWidget):
         # ─ Pipeline Controls ─
         left.addWidget(_section_label("PIPELINE CONTROLS"))
 
-        self.btn_load_video = QPushButton("Load Video")
-        self.btn_load_video.setProperty("class", "PrimaryButton")
+        self.btn_load_video = QPushButton("Upload Video")
+        self.btn_load_video.setProperty("class", "BroadcastButton")
+        self.btn_load_video.setProperty("active", "false")
         self.btn_load_video.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_load_video.clicked.connect(self._load_video)
         left.addWidget(self.btn_load_video)
+
+        self.btn_broadcast_cam = QPushButton("Broadcast Camera")
+        self.btn_broadcast_cam.setProperty("class", "BroadcastButton")
+        self.btn_broadcast_cam.setProperty("active", "false")
+        self.btn_broadcast_cam.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_broadcast_cam.clicked.connect(self._broadcast_camera)
+        left.addWidget(self.btn_broadcast_cam)
 
         self.btn_yolo = QPushButton("YOLO Detection")
         self.btn_yolo.setProperty("class", "ToggleButton")
@@ -581,6 +595,32 @@ class LiveVideoScreen(QWidget):
         self.status_label.setObjectName("DetectRowLabel")
         self.status_label.setWordWrap(True)
         left.addWidget(self.status_label)
+
+        left.addSpacing(4)
+
+        # ─ Live Status Summary ─
+        left.addWidget(_section_label("SYSTEM STATUS"))
+
+        status_card = QFrame()
+        status_card.setObjectName("LiveStatusSection")
+        status_lay = QVBoxLayout(status_card)
+        status_lay.setContentsMargins(12, 10, 12, 10)
+        status_lay.setSpacing(0)
+
+        self._s_camera    = _DetectRow("Camera",    "OFF")
+        self._s_broadcast = _DetectRow("Broadcast",  "IDLE")
+        self._s_recording = _DetectRow("Recording",  "OFF")
+        self._s_yolo_st   = _DetectRow("YOLO",       "IDLE")
+        self._s_objects   = _DetectRow("Objects",    "0")
+        self._s_confidence= _DetectRow("Confidence", "--")
+
+        for row in (self._s_camera, self._s_broadcast,
+                    self._s_recording, self._s_yolo_st,
+                    self._s_objects, self._s_confidence):
+            status_lay.addWidget(row)
+            status_lay.addWidget(_divider())
+
+        left.addWidget(status_card)
 
         left.addStretch()
         left_scroll.setWidget(left_widget)
@@ -631,6 +671,7 @@ class LiveVideoScreen(QWidget):
         container_lay.setSpacing(0)
 
         self.canvas = _FeedCanvas()
+        self.canvas.mode = self.mode
         self.canvas.setMinimumHeight(400)
         self.canvas.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
@@ -715,7 +756,7 @@ class LiveVideoScreen(QWidget):
         center_widget = QWidget()
         center_widget.setLayout(center)
         center_widget.setObjectName("Card")
-        outer.addWidget(center_widget, 52)
+        outer.addWidget(center_widget, 58)
 
         # ══════════════════════════════════════════
         #  RIGHT PANEL (~30%) — Split Upper/Lower
@@ -805,7 +846,7 @@ class LiveVideoScreen(QWidget):
         right.addWidget(self.message_center, 1)
 
         right_scroll.setWidget(right_widget)
-        outer.addWidget(right_scroll, 30)
+        outer.addWidget(right_scroll, 22)
 
         # REC blink
         self._rec_visible = True
@@ -841,6 +882,24 @@ class LiveVideoScreen(QWidget):
             self.meta_label.setText(
                 f"{info['width']}\u00D7{info['height']}  \u00B7  H.265"
             )
+        
+        # Broadcast the frame if broadcaster is present
+        if self.broadcaster:
+            self.broadcaster.broadcast_qimage(qimage)
+
+    def update_frame(self, qimage):
+        """Called by Surgeon Console when a broadcast frame arrives."""
+        if self._paused:
+            return
+        # If we have an active local source running, do not let incoming network frames overwrite the canvas
+        if self.pipeline.video_running:
+            return
+        self.canvas.set_frame(qimage)
+        self._frame_count += 1
+        self.frame_lbl.setText(f"FRAME {self._frame_count:07d}")
+        self.meta_label.setText(
+            f"{qimage.width()}\u00D7{qimage.height()}  \u00B7  H.265"
+        )
 
     def _on_stats(self, stats):
         # Detection summary rows
@@ -873,19 +932,91 @@ class LiveVideoScreen(QWidget):
             f"{stats.inference_ms:.1f}" if stats.inference_ms > 0 else "--"
         )
 
+        # Update live status section
+        self._s_objects.set_value(str(stats.objects_detected))
+        self._s_confidence.set_value(f"{conf:.0f}%" if conf > 0 else "--")
+        if stats.objects_detected > 0:
+            self._s_objects.set_color("#10B981")
+            self._s_confidence.set_color("#10B981")
+        else:
+            self._s_objects.reset_color()
+            self._s_confidence.reset_color()
+
     def _on_status(self, msg):
         self.status_label.setText(msg)
         self.message_center.add_message(msg)
 
     # ── Button Handlers ───────────────────────────────────────────────
 
+    def set_connection_manager(self, conn_manager):
+        """Inject connection manager for broadcasting."""
+        try:
+            from services.video_broadcaster import VideoBroadcastService
+        except ImportError:
+            import sys
+            import os
+            # If running from main.py in the root (Surgeon Console), services is in Robot-Console/services
+            root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            robot_console_dir = os.path.join(root_dir, "Robot-Console")
+            if robot_console_dir not in sys.path:
+                sys.path.insert(0, robot_console_dir)
+            from services.video_broadcaster import VideoBroadcastService
+
+        self.broadcaster = VideoBroadcastService(conn_manager, self)
+        self.broadcaster.fps_updated.connect(self._on_broadcaster_fps)
+        self.broadcaster.status_changed.connect(self._on_status)
+
+    def _on_broadcaster_fps(self, fps):
+        # Update FPS label if needed, or leave it to YOLO
+        pass
+
     def _load_video(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, "Load Video", "",
+            self, "Upload Video", "",
             "Video Files (*.mp4 *.avi *.mkv *.mov *.wmv);;All Files (*)"
         )
         if path:
             self.pipeline.load_video(path)
+            if self.broadcaster:
+                self.broadcaster._mode = "video"
+                self.broadcaster._source = path
+            # Visual state: mark as active
+            self.btn_load_video.setProperty("active", "true")
+            self.btn_load_video.setText("Video Loaded")
+            self.btn_load_video.style().unpolish(self.btn_load_video)
+            self.btn_load_video.style().polish(self.btn_load_video)
+            # Update status section
+            import os as _os
+            self._s_camera.set_value(_os.path.basename(path)[:14])
+            self._s_camera.set_color("#10B981")
+            self._s_recording.set_value("VIDEO")
+            self._s_recording.set_color("#0095FF")
+
+    def _broadcast_camera(self):
+        cam_active = self.btn_broadcast_cam.property("active") == "true"
+        if cam_active:
+            # Stop camera broadcasting
+            self.pipeline.stop()
+            self.btn_broadcast_cam.setProperty("active", "false")
+            self.btn_broadcast_cam.setText("Broadcast Camera")
+            self._s_camera.set_value("OFF")
+            self._s_camera.reset_color()
+            self._s_broadcast.set_value("IDLE")
+            self._s_broadcast.reset_color()
+        else:
+            # Start camera broadcasting
+            if self.pipeline.load_camera(0):
+                if self.broadcaster:
+                    self.broadcaster._mode = "camera"
+                    self.broadcaster._source = 0
+                self.btn_broadcast_cam.setProperty("active", "true")
+                self.btn_broadcast_cam.setText("Stop Broadcasting")
+                self._s_camera.set_value("CAM 0")
+                self._s_camera.set_color("#10B981")
+                self._s_broadcast.set_value("LIVE")
+                self._s_broadcast.set_color("#10B981")
+        self.btn_broadcast_cam.style().unpolish(self.btn_broadcast_cam)
+        self.btn_broadcast_cam.style().polish(self.btn_broadcast_cam)
 
     def _toggle_yolo(self):
         self._yolo_enabled = not self._yolo_enabled
@@ -895,6 +1026,13 @@ class LiveVideoScreen(QWidget):
         )
         self.btn_yolo.style().unpolish(self.btn_yolo)
         self.btn_yolo.style().polish(self.btn_yolo)
+        # Update status section
+        if self._yolo_enabled:
+            self._s_yolo_st.set_value("RUNNING")
+            self._s_yolo_st.set_color("#10B981")
+        else:
+            self._s_yolo_st.set_value("IDLE")
+            self._s_yolo_st.reset_color()
 
     def _toggle_vitals(self):
         self._vitals_enabled = not self._vitals_enabled

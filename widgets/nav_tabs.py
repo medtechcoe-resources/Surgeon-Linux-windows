@@ -92,8 +92,8 @@ class _IconTabButton(QPushButton):
         self._hover = False
 
         # Calculate width from text
-        self.setMinimumWidth(120)
-        self.setFixedHeight(52)
+        self.setMinimumWidth(110)
+        self.setFixedHeight(44)
 
         tm = ThemeManager.instance()
         tm.theme_changed.connect(self._on_theme)
@@ -171,7 +171,7 @@ class NavBar(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("NavBar")
-        self.setFixedHeight(52)
+        self.setFixedHeight(44)
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(24, 0, 24, 0)

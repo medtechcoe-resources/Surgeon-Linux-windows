@@ -9,11 +9,17 @@ QWidget {
     background-color: #0D1117;
     color: #E6EDF3;
     font-family: "Inter", "Segoe UI", "Helvetica Neue", sans-serif;
-    font-size: 14px;
+    font-size: 13px;
 }
 
 QMainWindow {
     background-color: #0D1117;
+}
+
+/* CRITICAL: All QLabel backgrounds must be transparent by default */
+QLabel {
+    background-color: transparent;
+    color: #E6EDF3;
 }
 
 /* ---------- Header ---------- */
@@ -22,48 +28,54 @@ QMainWindow {
     border-bottom: 1px solid #1C2333;
 }
 #BrandTitle {
-    font-size: 20px;
+    font-size: 18px;
     font-weight: 700;
     color: #F5F7FA;
     letter-spacing: 1.5px;
+    background: transparent;
 }
 #BrandSubtitle {
     font-size: 11px;
     color: #6B7B8D;
     letter-spacing: 1.2px;
     font-weight: 500;
+    background: transparent;
 }
 #HeaderChip {
     background-color: #161B22;
     border: 1px solid #1C2333;
-    border-radius: 10px;
+    border-radius: 8px;
 }
 #HeaderChipLabel {
     color: #6B7B8D;
     font-size: 10px;
     letter-spacing: 1px;
     font-weight: 600;
+    background: transparent;
 }
 #HeaderChipValue {
     color: #F5F7FA;
-    font-size: 14px;
+    font-size: 13px;
     font-weight: 600;
+    background: transparent;
 }
 #HeaderChipValueAccent {
     color: #0095FF;
-    font-size: 15px;
+    font-size: 14px;
     font-weight: 700;
     font-family: "JetBrains Mono", "Consolas", monospace;
+    background: transparent;
 }
 #SystemActiveLabel {
     color: #10B981;
-    font-size: 14px;
+    font-size: 13px;
     font-weight: 700;
+    background: transparent;
 }
 #ThemeToggle {
     background-color: #161B22;
     border: 1px solid #1C2333;
-    border-radius: 10px;
+    border-radius: 8px;
     color: #F5F7FA;
     font-weight: 600;
     font-size: 13px;
@@ -87,11 +99,11 @@ QMainWindow {
 QPushButton[class="NavTab"] {
     background-color: transparent;
     border: none;
-    border-bottom: 3px solid transparent;
+    border-bottom: 2px solid transparent;
     color: #6B7B8D;
-    font-size: 14px;
+    font-size: 13px;
     font-weight: 500;
-    padding: 14px 6px;
+    padding: 10px 6px;
     text-align: left;
 }
 QPushButton[class="NavTab"]:hover {
@@ -100,74 +112,80 @@ QPushButton[class="NavTab"]:hover {
 QPushButton[class="NavTab"][active="true"] {
     color: #F5F7FA;
     font-weight: 600;
-    border-bottom: 3px solid #0095FF;
+    border-bottom: 2px solid #0095FF;
 }
 
 /* ---------- Cards ---------- */
 #Card {
     background-color: #171C22;
     border: none;
-    border-radius: 12px;
+    border-radius: 10px;
 }
-#Card[accent="green"]  { border-left: 4px solid #10B981; }
-#Card[accent="amber"]  { border-left: 4px solid #F59E0B; }
-#Card[accent="cyan"]   { border-left: 4px solid #0095FF; }
-#Card[accent="red"]    { border-left: 4px solid #EF4444; }
-#Card[accent="purple"] { border-left: 4px solid #8B5CF6; }
+#Card[accent="green"]  { border-left: 3px solid #10B981; }
+#Card[accent="amber"]  { border-left: 3px solid #F59E0B; }
+#Card[accent="cyan"]   { border-left: 3px solid #0095FF; }
+#Card[accent="red"]    { border-left: 3px solid #EF4444; }
+#Card[accent="purple"] { border-left: 3px solid #8B5CF6; }
 
 #CardLabel {
     color: #6B7B8D;
-    font-size: 12px;
+    font-size: 11px;
     font-weight: 600;
     letter-spacing: 0.8px;
+    background: transparent;
 }
 #CardValue {
     color: #F5F7FA;
-    font-size: 28px;
+    font-size: 26px;
     font-weight: 700;
     font-family: "JetBrains Mono", "Consolas", monospace;
+    background: transparent;
 }
 #CardSub {
     color: #6B7B8D;
-    font-size: 12px;
+    font-size: 11px;
+    background: transparent;
 }
 
 #SectionTitle {
     color: #B5BEC8;
-    font-size: 16px;
-    font-weight: 600;
-    letter-spacing: 0.8px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    background: transparent;
 }
 #PanelTitle {
     color: #F5F7FA;
-    font-size: 20px;
+    font-size: 16px;
     font-weight: 600;
     letter-spacing: 0.5px;
+    background: transparent;
 }
 #SectionHeaderBar {
-    background-color: #171C22;
-    border: none;
-    border-top-left-radius: 12px;
-    border-top-right-radius: 12px;
-}
-#PanelBody {
     background-color: #131820;
     border: none;
-    border-bottom-left-radius: 12px;
-    border-bottom-right-radius: 12px;
+    border-top-left-radius: 10px;
+    border-top-right-radius: 10px;
+}
+#PanelBody {
+    background-color: #171C22;
+    border: none;
+    border-bottom-left-radius: 10px;
+    border-bottom-right-radius: 10px;
 }
 
 /* ---------- Sidebar ---------- */
 #SidebarCard {
     background-color: #171C22;
     border: none;
-    border-radius: 12px;
+    border-radius: 10px;
 }
 #SidebarCardTitle {
     color: #6B7B8D;
-    font-size: 12px;
+    font-size: 10px;
     font-weight: 700;
     letter-spacing: 1px;
+    background: transparent;
 }
 #PatientAvatar {
     background-color: #0D2818;
@@ -179,32 +197,38 @@ QPushButton[class="NavTab"][active="true"] {
 }
 #PatientName {
     color: #F5F7FA;
-    font-size: 17px;
+    font-size: 16px;
     font-weight: 700;
+    background: transparent;
 }
 #PatientMeta {
     color: #6B7B8D;
-    font-size: 12px;
+    font-size: 11px;
+    background: transparent;
 }
 #FieldLabel {
     color: #6B7B8D;
-    font-size: 13px;
+    font-size: 12px;
     font-weight: 500;
+    background: transparent;
 }
 #FieldValue {
     color: #E6EDF3;
-    font-size: 14px;
+    font-size: 13px;
     font-weight: 600;
+    background: transparent;
 }
 #FieldValueBold {
     color: #F5F7FA;
-    font-size: 15px;
+    font-size: 14px;
     font-weight: 700;
+    background: transparent;
 }
 #FieldValueWarn {
     color: #F59E0B;
-    font-size: 14px;
+    font-size: 13px;
     font-weight: 700;
+    background: transparent;
 }
 QFrame#HLine {
     background-color: #1C2333;
@@ -222,18 +246,19 @@ QFrame#HLine {
     font-size: 11px;
     font-weight: 500;
     letter-spacing: 0.5px;
+    background: transparent;
 }
 
 /* ---------- Primary Buttons ---------- */
 QPushButton[class="PrimaryButton"] {
     background-color: #0095FF;
     border: none;
-    border-radius: 10px;
+    border-radius: 7px;
     color: #FFFFFF;
-    font-size: 14px;
+    font-size: 13px;
     font-weight: 600;
-    padding: 14px 24px;
-    min-height: 50px;
+    padding: 9px 18px;
+    min-height: 36px;
 }
 QPushButton[class="PrimaryButton"]:hover {
     background-color: #1AA3FF;
@@ -250,12 +275,12 @@ QPushButton[class="PrimaryButton"]:disabled {
 QPushButton[class="SecondaryButton"] {
     background-color: transparent;
     border: 1px solid #2D3748;
-    border-radius: 10px;
+    border-radius: 7px;
     color: #B5BEC8;
-    font-size: 14px;
+    font-size: 13px;
     font-weight: 600;
-    padding: 14px 24px;
-    min-height: 50px;
+    padding: 9px 18px;
+    min-height: 36px;
 }
 QPushButton[class="SecondaryButton"]:hover {
     border-color: #0095FF;
@@ -274,12 +299,12 @@ QPushButton[class="SecondaryButton"]:disabled {
 QPushButton[class="DangerButton"] {
     background-color: #EF4444;
     border: none;
-    border-radius: 10px;
+    border-radius: 7px;
     color: #FFFFFF;
-    font-size: 14px;
+    font-size: 13px;
     font-weight: 700;
-    padding: 14px 24px;
-    min-height: 50px;
+    padding: 9px 18px;
+    min-height: 36px;
 }
 QPushButton[class="DangerButton"]:hover {
     background-color: #F87171;
@@ -294,24 +319,29 @@ QPushButton[class="DangerButton"]:disabled {
 
 /* ---------- Toggle Buttons ---------- */
 QPushButton[class="ToggleButton"] {
-    background-color: #1C2333;
-    border: 1px solid #2D3748;
-    border-radius: 10px;
-    color: #6B7B8D;
-    font-size: 14px;
+    background-color: #0D2818;
+    border: 1.5px solid #10B981;
+    border-radius: 7px;
+    color: #10B981;
+    font-size: 13px;
     font-weight: 600;
-    padding: 14px 20px;
-    min-height: 50px;
+    padding: 9px 18px;
+    min-height: 36px;
 }
 QPushButton[class="ToggleButton"]:hover {
-    border-color: #4A5568;
-    color: #B5BEC8;
-    background-color: #222D3D;
+    background-color: #0A3020;
+    border-color: #34D399;
+    color: #34D399;
 }
 QPushButton[class="ToggleButton"][active="true"] {
-    background-color: #0D2818;
-    border-color: #10B981;
-    color: #10B981;
+    background-color: #2C0A0A;
+    border-color: #EF4444;
+    color: #EF4444;
+}
+QPushButton[class="ToggleButton"][active="true"]:hover {
+    background-color: #3D1515;
+    border-color: #F87171;
+    color: #F87171;
 }
 QPushButton[class="ToggleButton"][active="true"][accent="blue"] {
     background-color: #0D1B2A;
@@ -326,13 +356,13 @@ QPushButton[class="ToggleButton"][active="true"][accent="purple"] {
 
 /* ---------- Grid/Icon Buttons ---------- */
 QPushButton[class="GridButton"] {
-    background-color: #131820;
+    background-color: #161B22;
     border: 1px solid #2D3748;
-    border-radius: 10px;
+    border-radius: 7px;
     color: #B5BEC8;
-    font-size: 13px;
+    font-size: 12px;
     font-weight: 600;
-    padding: 12px 10px;
+    padding: 7px 10px;
 }
 QPushButton[class="GridButton"]:hover {
     border-color: #0095FF;
@@ -348,13 +378,13 @@ QPushButton[class="GridButton"][active="true"] {
 /* ---------- Pedal Buttons ---------- */
 QPushButton[class="PedalButton"] {
     background-color: #171C22;
-    border: 2px solid #2D3748;
-    border-radius: 12px;
+    border: 1.5px solid #2D3748;
+    border-radius: 8px;
     color: #B5BEC8;
-    font-size: 14px;
+    font-size: 13px;
     font-weight: 700;
-    padding: 16px;
-    min-height: 60px;
+    padding: 12px;
+    min-height: 44px;
 }
 QPushButton[class="PedalButton"]:hover {
     border-color: #0095FF;
@@ -372,79 +402,30 @@ QPushButton[class="PedalButton"][active="true"] {
     color: #10B981;
 }
 
-/* ---------- Compact Action Buttons ---------- */
-QPushButton[class="ClutchButton"] {
-    background-color: #161B22;
-    border: 2px solid #0095FF;
-    border-radius: 8px;
-    color: #0095FF;
-    font-size: 13px;
-    font-weight: 700;
-    padding: 8px 12px;
-    min-height: 44px;
-}
-QPushButton[class="ClutchButton"][active="true"] {
-    background-color: #0095FF;
-    color: #FFFFFF;
-}
-QPushButton[class="ClutchButton"]:hover { background-color: #0D1B2A; }
-
-QPushButton[class="CoagButton"] {
-    background-color: #161B22;
-    border: 2px solid #F59E0B;
-    border-radius: 8px;
-    color: #F59E0B;
-    font-size: 13px;
-    font-weight: 700;
-    padding: 8px 12px;
-    min-height: 44px;
-}
-QPushButton[class="CoagButton"][active="true"] {
-    background-color: #F59E0B;
-    color: #0D1117;
-}
-QPushButton[class="CoagButton"]:hover { background-color: #1E1600; }
-
-QPushButton[class="CutButton"] {
-    background-color: #161B22;
-    border: 2px solid #EF4444;
-    border-radius: 8px;
-    color: #EF4444;
-    font-size: 13px;
-    font-weight: 700;
-    padding: 8px 12px;
-    min-height: 44px;
-}
-QPushButton[class="CutButton"][active="true"] {
-    background-color: #EF4444;
-    color: #FFFFFF;
-}
-QPushButton[class="CutButton"]:hover { background-color: #1A0000; }
-
 /* ---------- Emergency Stop ---------- */
 QPushButton#EStop {
-    background-color: #EF4444;
+    background-color: #C91C1C;
     border: 2px solid #F87171;
-    border-radius: 8px;
+    border-radius: 6px;
     color: #FFFFFF;
-    font-size: 13px;
+    font-size: 11px;
     font-weight: 800;
-    letter-spacing: 1px;
-    padding: 0px 18px;
+    letter-spacing: 0.5px;
+    padding: 0px 12px;
     min-height: 44px;
     min-width: 160px;
 }
 QPushButton#EStop:hover {
-    background-color: #F87171;
+    background-color: #EF4444;
     border-color: #FCA5A5;
 }
 QPushButton#EStop:pressed {
-    background-color: #DC2626;
+    background-color: #991B1B;
 }
 
 /* ---------- Sliders ---------- */
 QSlider::groove:horizontal {
-    height: 6px;
+    height: 5px;
     background: #1C2333;
     border-radius: 3px;
 }
@@ -455,10 +436,10 @@ QSlider::sub-page:horizontal {
 QSlider::handle:horizontal {
     background: #F5F7FA;
     border: 2px solid #0095FF;
-    width: 18px;
-    height: 18px;
-    margin: -7px 0;
-    border-radius: 9px;
+    width: 16px;
+    height: 16px;
+    margin: -6px 0;
+    border-radius: 8px;
 }
 QSlider::handle:horizontal:hover {
     background: #FFFFFF;
@@ -478,14 +459,14 @@ QSlider::handle:horizontal:disabled {
 QProgressBar {
     background-color: #1C2333;
     border: none;
-    border-radius: 4px;
-    height: 8px;
+    border-radius: 3px;
+    height: 6px;
     text-align: center;
     color: transparent;
 }
 QProgressBar::chunk {
     background-color: #10B981;
-    border-radius: 4px;
+    border-radius: 3px;
 }
 QProgressBar[level="caution"]::chunk { background-color: #F59E0B; }
 QProgressBar[level="critical"]::chunk { background-color: #EF4444; }
@@ -502,6 +483,7 @@ QTableWidget {
 QTableWidget::item {
     border-bottom: 1px solid #1C2333;
     padding: 6px;
+    background: transparent;
 }
 QHeaderView::section {
     background-color: transparent;
@@ -516,11 +498,11 @@ QHeaderView::section {
 /* ---------- Scrollbars ---------- */
 QScrollBar:vertical {
     background: transparent;
-    width: 10px;
+    width: 8px;
 }
 QScrollBar::handle:vertical {
     background: #2D3748;
-    border-radius: 5px;
+    border-radius: 4px;
     min-height: 28px;
 }
 QScrollBar::handle:vertical:hover {
@@ -529,11 +511,11 @@ QScrollBar::handle:vertical:hover {
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
 QScrollBar:horizontal {
     background: transparent;
-    height: 10px;
+    height: 8px;
 }
 QScrollBar::handle:horizontal {
     background: #2D3748;
-    border-radius: 5px;
+    border-radius: 4px;
     min-width: 28px;
 }
 QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }
@@ -541,81 +523,93 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }
 /* ---------- Telemetry Values ---------- */
 #TelemetryValue {
     color: #F5F7FA;
-    font-size: 28px;
+    font-size: 26px;
     font-weight: 700;
     font-family: "JetBrains Mono", "Consolas", monospace;
+    background: transparent;
 }
 #TelemetryUnit {
     color: #6B7B8D;
-    font-size: 14px;
+    font-size: 13px;
     font-weight: 500;
+    background: transparent;
 }
 #TelemetryLabel {
     color: #6B7B8D;
-    font-size: 12px;
+    font-size: 11px;
     font-weight: 600;
     letter-spacing: 0.5px;
+    background: transparent;
 }
 
 /* ---------- Vital Display ---------- */
 #VitalValue {
     color: #F5F7FA;
-    font-size: 30px;
+    font-size: 28px;
     font-weight: 700;
     font-family: "JetBrains Mono", "Consolas", monospace;
+    background: transparent;
 }
 #VitalLabel {
     color: #6B7B8D;
-    font-size: 11px;
+    font-size: 10px;
     font-weight: 600;
     letter-spacing: 0.5px;
+    background: transparent;
 }
 #VitalUnit {
     color: #6B7B8D;
-    font-size: 13px;
+    font-size: 12px;
+    background: transparent;
 }
 
 /* ---------- Status Indicators ---------- */
 #StatusGood {
     color: #10B981;
-    font-size: 14px;
+    font-size: 13px;
     font-weight: 700;
+    background: transparent;
 }
 #StatusCaution {
     color: #F59E0B;
-    font-size: 14px;
+    font-size: 13px;
     font-weight: 700;
+    background: transparent;
 }
 #StatusCritical {
     color: #EF4444;
-    font-size: 14px;
+    font-size: 13px;
     font-weight: 700;
+    background: transparent;
 }
 
 /* ---------- Detection Info Row ---------- */
 #DetectRowLabel {
+    background-color: transparent;
     color: #6B7B8D;
     font-size: 12px;
-    font-weight: 600;
-    letter-spacing: 0.5px;
+    font-weight: 500;
 }
 #DetectRowValue {
+    background-color: transparent;
     color: #F5F7FA;
-    font-size: 14px;
+    font-size: 13px;
     font-weight: 700;
     font-family: "JetBrains Mono", "Consolas", monospace;
 }
 #SliderLabel {
+    background-color: transparent;
     color: #6B7B8D;
     font-size: 12px;
-    font-weight: 600;
+    font-weight: 500;
 }
 #SliderValue {
+    background-color: transparent;
     color: #0095FF;
-    font-size: 13px;
+    font-size: 12px;
     font-weight: 700;
     font-family: "JetBrains Mono", "Consolas", monospace;
-    min-width: 52px;
+    min-width: 46px;
 }
 
 /* ---------- Misc ---------- */
@@ -631,19 +625,19 @@ QToolTip {
     border: 1px solid #2D3748;
     border-radius: 6px;
     padding: 8px;
-    font-size: 13px;
+    font-size: 12px;
 }
 
 /* ---------- Compact Action Buttons (Live Video) ---------- */
 QPushButton[class="CompactAction"] {
     background-color: #171C22;
     border: 1px solid #2D3748;
-    border-radius: 8px;
+    border-radius: 6px;
     color: #B5BEC8;
     font-size: 12px;
     font-weight: 600;
-    padding: 8px 10px;
-    min-height: 34px;
+    padding: 6px 10px;
+    min-height: 30px;
 }
 QPushButton[class="CompactAction"]:hover {
     border-color: #0095FF;
@@ -662,7 +656,7 @@ QPushButton#PauseOverlay {
     border: 1px solid rgba(45, 55, 72, 180);
     border-radius: 8px;
     color: #F5F7FA;
-    font-size: 16px;
+    font-size: 14px;
     font-weight: 700;
     min-width: 40px;
     min-height: 40px;
@@ -679,21 +673,24 @@ QPushButton#PauseOverlay:hover {
     background-color: #171C22;
     border: none;
     border-left: 3px solid #0095FF;
-    border-radius: 8px;
+    border-radius: 7px;
 }
 #MetricSummaryTitle {
+    background-color: transparent;
     color: #6B7B8D;
     font-size: 10px;
     font-weight: 600;
-    letter-spacing: 0.5px;
+    letter-spacing: 0.4px;
 }
 #MetricSummaryValue {
+    background-color: transparent;
     color: #F5F7FA;
-    font-size: 22px;
+    font-size: 18px;
     font-weight: 700;
     font-family: "JetBrains Mono", "Consolas", monospace;
 }
 #MetricSummarySub {
+    background-color: transparent;
     color: #4A5568;
     font-size: 10px;
     font-weight: 500;
@@ -703,34 +700,35 @@ QPushButton#PauseOverlay:hover {
 #MessageCard {
     background-color: #171C22;
     border: none;
-    border-radius: 10px;
+    border-radius: 8px;
 }
 #MessageCardTitle {
+    background-color: transparent;
     color: #B5BEC8;
-    font-size: 13px;
+    font-size: 11px;
     font-weight: 700;
-    letter-spacing: 0.8px;
+    letter-spacing: 0.6px;
 }
 #MessageItem {
     background-color: #131820;
     border: none;
-    border-radius: 6px;
-    padding: 8px 12px;
+    border-radius: 4px;
 }
 #MessageItemLatest {
     background-color: #0D1B2A;
     border: 1px solid #0095FF;
-    border-radius: 6px;
-    padding: 8px 12px;
+    border-radius: 4px;
 }
 #MessageText {
+    background-color: transparent;
     color: #B5BEC8;
-    font-size: 12px;
+    font-size: 11px;
     font-weight: 500;
 }
 #MessageTextLatest {
+    background-color: transparent;
     color: #F5F7FA;
-    font-size: 12px;
+    font-size: 11px;
     font-weight: 600;
 }
 
@@ -738,14 +736,16 @@ QPushButton#PauseOverlay:hover {
 #SystemStatusCard {
     background-color: #171C22;
     border: none;
-    border-radius: 10px;
+    border-radius: 8px;
 }
 #SystemStatusLabel {
+    background-color: transparent;
     color: #6B7B8D;
-    font-size: 11px;
-    font-weight: 600;
+    font-size: 12px;
+    font-weight: 500;
 }
 #SystemStatusValue {
+    background-color: transparent;
     font-size: 12px;
     font-weight: 700;
 }
@@ -755,7 +755,7 @@ QTextEdit#SurgeryNotes {
     background-color: #131820;
     color: #E6EDF3;
     border: 1px solid #2D3748;
-    border-radius: 8px;
+    border-radius: 7px;
     padding: 10px;
     font-size: 13px;
     font-family: "Inter", "Segoe UI", sans-serif;
@@ -765,10 +765,11 @@ QTextEdit#SurgeryNotes:focus {
     border-color: #0095FF;
 }
 
-/* ---------- Sidebar Section Title (Larger) ---------- */
+/* ---------- Sidebar Section Title ---------- */
 #SidebarSectionTitle {
-    color: #B5BEC8;
-    font-size: 14px;
+    background-color: transparent;
+    color: #4A5568;
+    font-size: 10px;
     font-weight: 700;
     letter-spacing: 0.8px;
 }
@@ -777,13 +778,13 @@ QTextEdit#SurgeryNotes:focus {
 QPushButton[class="FlatPedal"] {
     background-color: #171C22;
     border: 1px solid #2D3748;
-    border-radius: 8px;
+    border-radius: 7px;
     color: #B5BEC8;
-    font-size: 13px;
+    font-size: 12px;
     font-weight: 700;
-    padding: 10px 16px;
-    min-height: 40px;
-    letter-spacing: 0.5px;
+    padding: 8px 14px;
+    min-height: 34px;
+    letter-spacing: 0.3px;
 }
 QPushButton[class="FlatPedal"]:hover {
     border-color: #4A5568;
@@ -796,20 +797,193 @@ QPushButton[class="FlatPedal"][active="true"] {
     color: #10B981;
 }
 QPushButton[class="FlatPedalCoag"] {
-    background-color: #171C22;
-    border: 1px solid #2D3748;
-    border-radius: 8px;
+    background-color: #1E1600;
+    border: 1px solid #F59E0B;
+    border-radius: 7px;
     color: #F59E0B;
-    font-size: 13px;
+    font-size: 12px;
     font-weight: 700;
-    padding: 10px 16px;
-    min-height: 40px;
+    padding: 8px 14px;
+    min-height: 34px;
 }
 QPushButton[class="FlatPedalCoag"]:hover {
-    border-color: #F59E0B;
-    background-color: #1E1600;
+    border-color: #FBBF24;
+    background-color: #2A1E00;
 }
 QPushButton[class="FlatPedalCoag"][active="true"] {
     background-color: #F59E0B;
     color: #0D1117;
+}
+
+/* ---------- Broadcast Button ---------- */
+QPushButton[class="BroadcastButton"] {
+    background-color: #0D2818;
+    border: 1.5px solid #10B981;
+    border-radius: 7px;
+    color: #10B981;
+    font-size: 13px;
+    font-weight: 600;
+    padding: 9px 18px;
+    min-height: 36px;
+}
+QPushButton[class="BroadcastButton"]:hover {
+    background-color: #0A3020;
+    border-color: #34D399;
+    color: #34D399;
+}
+QPushButton[class="BroadcastButton"][active="true"] {
+    background-color: #2C0A0A;
+    border-color: #EF4444;
+    color: #EF4444;
+}
+QPushButton[class="BroadcastButton"][active="true"]:hover {
+    background-color: #3D1515;
+    border-color: #F87171;
+    color: #F87171;
+}
+QPushButton[class="BroadcastButton"]:disabled {
+    background-color: #1C2333;
+    border-color: #2D3748;
+    color: #4A5568;
+}
+
+/* ═══════════════════════════════════════════════
+   PRE-OP IMAGING WORKSPACE STYLES
+   ═══════════════════════════════════════════════ */
+
+/* Scan type selector container */
+#ScanSelectorContainer {
+    background-color: #131820;
+    border: 1px solid #1C2333;
+    border-radius: 8px;
+}
+
+/* MRI / CT tab buttons */
+QPushButton[class="ScanTab"] {
+    background-color: transparent;
+    border: none;
+    border-radius: 6px;
+    color: #6B7B8D;
+    font-size: 13px;
+    font-weight: 600;
+    padding: 8px 20px;
+    letter-spacing: 0.5px;
+    min-height: 34px;
+}
+QPushButton[class="ScanTab"]:hover {
+    color: #B5BEC8;
+    background-color: #1C2333;
+}
+QPushButton[class="ScanTab"][active="true"] {
+    background-color: #0095FF;
+    color: #FFFFFF;
+    font-weight: 700;
+}
+
+/* Medical image viewer frame */
+#MedicalViewer {
+    background-color: #000000;
+    border: 1px solid #1C2333;
+    border-radius: 8px;
+}
+
+/* Viewer control buttons */
+QPushButton[class="ViewerControl"] {
+    background-color: #161B22;
+    border: 1px solid #2D3748;
+    border-radius: 5px;
+    color: #B5BEC8;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 5px 12px;
+    min-height: 28px;
+}
+QPushButton[class="ViewerControl"]:hover {
+    border-color: #0095FF;
+    color: #F5F7FA;
+    background-color: #1C2333;
+}
+
+/* Load image button (Pre-Op) */
+QPushButton[class="LoadImageButton"] {
+    background-color: #0D1B2A;
+    border: 1px solid #0095FF;
+    border-radius: 6px;
+    color: #0095FF;
+    font-size: 12px;
+    font-weight: 700;
+    padding: 7px 16px;
+    min-height: 32px;
+    letter-spacing: 0.3px;
+}
+QPushButton[class="LoadImageButton"]:hover {
+    background-color: #0095FF;
+    color: #FFFFFF;
+}
+
+/* Dermoscopic image viewer */
+#DermoscopicViewer {
+    background-color: #0D1117;
+    border: 1px solid #1C2333;
+    border-radius: 7px;
+}
+
+/* Pre-Op info panel sections */
+#InfoSectionTitle {
+    color: #4A5568;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1.2px;
+    background: transparent;
+}
+#InfoSectionCard {
+    background-color: #131820;
+    border: none;
+    border-radius: 8px;
+    border-left: 2px solid #1C2333;
+}
+
+/* Image status label */
+#ImageStatusLabel {
+    color: #10B981;
+    font-size: 11px;
+    font-weight: 600;
+    background: transparent;
+}
+#ImageStatusLabelIdle {
+    color: #4A5568;
+    font-size: 11px;
+    font-weight: 500;
+    background: transparent;
+}
+
+/* Modality title in viewer */
+#ViewerModalityTitle {
+    color: #0095FF;
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    background: transparent;
+}
+#ViewerMetaLabel {
+    color: #4A5568;
+    font-size: 11px;
+    font-weight: 500;
+    background: transparent;
+}
+
+/* ═══════════════════════════════════════════════
+   LIVE STATUS SECTION (Live Video left panel)
+   ═══════════════════════════════════════════════ */
+#LiveStatusSection {
+    background-color: #131820;
+    border: none;
+    border-radius: 7px;
+}
+#LiveStatusTitle {
+    color: #4A5568;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    background: transparent;
 }

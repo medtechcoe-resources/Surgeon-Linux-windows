@@ -1,6 +1,46 @@
+# ─── Python ──────────────────────────────────────────────────────
 __pycache__/
+*.py[cod]
+*.pyc
+*.pyo
+*.pyd
 *.pt
-{screens,widgets,styles}/
-shared_networking/__pycache__/
-Observer-Screen/__pycache__/
-Observer-Screen/ui/__pycache__/
+
+# ─── Security & Secrets (NEVER commit) ───────────────────────────
+# SQLite database
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# TLS certificates and private keys
+*.crt
+*.key
+*.pem
+*.p12
+*.pfx
+
+# Legacy security files (migrated to SQLite/TLS)
+credentials.json
+aether.key
+
+# ─── Runtime ─────────────────────────────────────────────────────
+*.log
+*.log.*
+aether.log
+aether.log.*
+
+# ─── IDE ─────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ─── Tool Outputs & Reports ──────────────────────────────────────
+vulture_report.txt
+*.report.txt
+
+# ─── OS ──────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+

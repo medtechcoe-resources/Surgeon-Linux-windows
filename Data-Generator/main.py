@@ -26,8 +26,8 @@ for _p in (_THIS_DIR, _PROJECT_ROOT):
 # Use QCoreApplication — no GUI needed
 from PyQt6.QtCore import QCoreApplication, QTimer
 
-from shared_networking.encryption import EncryptionManager
-from shared_networking.config import ENCRYPTION_KEY_PATH
+from shared_networking.database import AetherDatabase
+from shared_networking.config import DATABASE_PATH
 
 from publisher import DataPublisher
 from console_ui import ConsoleUI
@@ -39,11 +39,14 @@ def main():
     app.setOrganizationName("MedRobot")
     app.setApplicationVersion("4.2")
 
-    # ── Encryption (shared key must exist) ────────────────────────
-    em = EncryptionManager.instance()
-    if not em.load_key(ENCRYPTION_KEY_PATH):
-        EncryptionManager.generate_key(ENCRYPTION_KEY_PATH)
-        em.load_key(ENCRYPTION_KEY_PATH)
+    # ── Initialize Security Database (read-only access) ───────────
+    # Data Generator does not manage users — it only needs the DB
+    # open so connection_manager can resolve its TLS context.
+    db = AetherDatabase.instance()
+    if not db.open(DATABASE_PATH):
+        print("[ERROR] Cannot open security database.")
+        print("        Run 'python broker.py --provision' first.")
+        sys.exit(1)
 
     # ── Publisher (owns all generators) ───────────────────────────
     publisher = DataPublisher()

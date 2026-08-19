@@ -28,6 +28,7 @@ from ui.tab_robot_telemetry import RobotTelemetryTab
 from ui.tab_communication import CommunicationTab
 from ui.tab_alerts import AlertsTab
 from ui.widgets import StatusBadge, StatusIndicator
+from screens.live_video import LiveVideoScreen
 
 
 class MainWindow(QMainWindow):
@@ -182,6 +183,7 @@ class MainWindow(QMainWindow):
         self._tab_widget.setDocumentMode(True)
 
         # Create tab instances
+        self._live_video_tab = LiveVideoScreen(mode="robot")
         self._dashboard_tab  = DashboardTab()
         self._vitals_tab     = PatientVitalsTab()
         self._telemetry_tab  = RobotTelemetryTab()
@@ -193,6 +195,7 @@ class MainWindow(QMainWindow):
         self._comm_tab.on_disconnect = self._on_disconnect
 
         # Add tabs
+        self._tab_widget.addTab(self._live_video_tab, "  LIVE VIDEO  ")
         self._tab_widget.addTab(self._dashboard_tab,  "  DASHBOARD  ")
         self._tab_widget.addTab(self._vitals_tab,     "  PATIENT VITALS  ")
         self._tab_widget.addTab(self._telemetry_tab,  "  ROBOT TELEMETRY  ")
@@ -227,6 +230,8 @@ class MainWindow(QMainWindow):
         self._pubsub.log_message.connect(self._on_log_message)
         self._pubsub.stats_updated.connect(self._on_pubsub_stats)
         self._pubsub.data_received.connect(self._on_data_received)
+        self._pubsub.raw_data_sent.connect(self._on_raw_data_sent)
+        self._pubsub.raw_data_received.connect(self._on_raw_data_received)
 
         # Connection monitor signals
         self._conn_monitor.stats_updated.connect(self._on_stats_updated)
@@ -240,6 +245,8 @@ class MainWindow(QMainWindow):
         self._conn_monitor.start()
         # Auto-connect to pub-sub broker to receive data from Data Generator
         self._pubsub.start()
+        # Inject the pub-sub manager into LiveVideoScreen for broadcasting
+        self._live_video_tab.set_connection_manager(self._pubsub)
 
     def _stop_services(self):
         """Stop all background services."""
@@ -345,15 +352,29 @@ class MainWindow(QMainWindow):
     # ══════════════════════════════════════════════════════════════
 
     def _on_data_received(self, message: dict):
-        """Handle data received from the broker."""
+        """Handle processed data for UI updates."""
         msg_type = message.get("type", "")
-        self._comm_tab.update_received_json(message)
         if msg_type == MSG_VITALS_DATA:
             self._vitals_tab.update_vitals(message)
+
+    def _on_raw_data_received(self, message: dict, plaintext: bytes, encrypted: bytes):
+        """Handle raw data received from the broker."""
+        msg_type = message.get("topic", "")
+        if not msg_type:
+            msg_type = message.get("type", "UNKNOWN")
+        self._comm_tab.update_raw_received(message, plaintext, encrypted)
         self._comm_tab.add_log_entry("INFO", f"Received {msg_type} packet")
 
+    def _on_raw_data_sent(self, message: dict, plaintext: bytes, encrypted: bytes):
+        """Handle raw data sent to the broker."""
+        msg_type = message.get("topic", "")
+        if not msg_type:
+            msg_type = message.get("type", "UNKNOWN")
+        self._comm_tab.update_raw_sent(message, plaintext, encrypted)
+        self._comm_tab.add_log_entry("INFO", f"Sent {msg_type} packet")
+
     def _on_data_sent(self, message: dict):
-        """Handle data sent confirmation."""
+        """Legacy handler for TCP client."""
         msg_type = message.get("type", "")
         self._comm_tab.update_sent_json(message)
         self._comm_tab.add_log_entry("INFO", f"Sent {msg_type} packet")

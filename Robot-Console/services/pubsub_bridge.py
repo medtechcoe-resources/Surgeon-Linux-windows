@@ -50,6 +50,8 @@ class PubSubBridge(QObject):
     log_message        = pyqtSignal(str, str)   # (level, message)
     stats_updated      = pyqtSignal(dict)
     data_received      = pyqtSignal(dict)       # raw message for comm tab
+    raw_data_sent      = pyqtSignal(dict, bytes, bytes)
+    raw_data_received  = pyqtSignal(dict, bytes, bytes)
 
     def __init__(self, parent=None, username: str = "", role: str = "",
                  session_id: str = ""):
@@ -73,6 +75,8 @@ class PubSubBridge(QObject):
         self._conn_manager.log_message.connect(self.log_message)
         self._conn_manager.stats_updated.connect(self.stats_updated)
         self._conn_manager.message_received.connect(self._on_message)
+        self._conn_manager.raw_data_sent.connect(self.raw_data_sent)
+        self._conn_manager.raw_data_received.connect(self.raw_data_received)
 
     # ── Properties ────────────────────────────────────────────────
 

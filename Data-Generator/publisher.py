@@ -62,6 +62,10 @@ class DataPublisher(QObject):
             subscribe_topics=[],
             username="aether_datagen",
             role="data_generator",
+            # session_id is a static placeholder. The data generator is a
+            # service device authenticated via mTLS certificate (device_type=
+            # 'data_generator'). The broker grants the 'data_generator' role
+            # directly from the device type and does not validate this token.
             session_id="datagen-001",
             parent=self,
         )

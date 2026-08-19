@@ -2,6 +2,20 @@
 #  ROBOT CONSOLE — TCP CLIENT
 #  Handles all TCP communication with the Surgeon Console.
 #  Runs on dedicated QThreads to keep the UI responsive.
+#
+#  Architecture Note (traced 2026-08-13):
+#  This is the Robot-Console's own networking layer and is ACTIVELY
+#  USED by Robot-Console/ui/main_window.py. It is intentionally
+#  separate from shared_networking.connection_manager (the Surgeon
+#  Console's pub-sub client), as it operates over a separate
+#  direct TCP connection and has its own protocol layer
+#  (Robot-Console/networking/protocol.py).
+#
+#  This client does NOT use mTLS and is considered LEGACY relative
+#  to the shared_networking pub-sub architecture. Migration to the
+#  shared pub-sub model is a future scope item. Do not remove or
+#  rewrite this module without first migrating main_window.py and
+#  validating full Robot-Console functionality.
 # ═══════════════════════════════════════════════════════════════════
 
 import socket
@@ -9,16 +23,15 @@ import time
 import threading
 from datetime import datetime
 
-from PyQt6.QtCore import QObject, QThread, pyqtSignal, QTimer
+from PyQt6.QtCore import QObject, pyqtSignal, QTimer
 
 from networking.protocol import (
-    HEADER_SIZE, encode_message, decode_header, decode_payload,
     create_heartbeat, create_handshake, create_message,
-    MSG_ROBOT_TELEMETRY, MSG_HEARTBEAT,
+    MSG_HEARTBEAT,
 )
 from constants import (
     TCP_HOST, TCP_PORT,
-    HEARTBEAT_INTERVAL_MS, RECONNECT_DELAY_MS, MAX_RECONNECT_ATTEMPTS,
+    HEARTBEAT_INTERVAL_MS, MAX_RECONNECT_ATTEMPTS,
 )
 
 

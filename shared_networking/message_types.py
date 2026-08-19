@@ -17,6 +17,7 @@ TOPIC_VIDEO_DETECTION = "video_detection"
 TOPIC_SYSTEM_LOGS = "system_logs"
 TOPIC_ROBOT_COMMANDS = "robot_commands"
 TOPIC_SYSTEM_CONTROL = "system_control"
+TOPIC_VIDEO_BROADCAST = "video_broadcast"  # Robot Console -> Surgeon Console live video
 
 # ─── All Topics List ──────────────────────────────────────────────────
 
@@ -32,6 +33,7 @@ ALL_TOPICS = [
     TOPIC_SYSTEM_LOGS,
     TOPIC_ROBOT_COMMANDS,
     TOPIC_SYSTEM_CONTROL,
+    TOPIC_VIDEO_BROADCAST,
 ]
 
 # ─── Client Publish/Subscribe Profiles ─────────────────────────────────
@@ -56,10 +58,12 @@ SURGEON_SUBSCRIBES = [
     TOPIC_ALERTS,
     TOPIC_CONNECTION_STATUS,
     TOPIC_SYSTEM_STATUS,
+    TOPIC_VIDEO_BROADCAST,
 ]
 
 ROBOT_PUBLISHES = [
     TOPIC_CONNECTION_STATUS,
+    TOPIC_VIDEO_BROADCAST,
 ]
 
 ROBOT_SUBSCRIBES = [

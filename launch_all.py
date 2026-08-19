@@ -22,6 +22,26 @@ def main():
     print("=" * 60)
 
     processes = []
+    
+    # Pre-check: ensure security is provisioned before starting subprocesses
+    try:
+        from shared_networking.database import AetherDatabase
+        from shared_networking.tls import TLSManager
+        from shared_networking.provisioning import is_provisioned, provision
+        from shared_networking.config import DATABASE_PATH, CERTS_DIR
+        print("\n  [0/5] Checking Security Provisioning...")
+        db = AetherDatabase.instance()
+        db.open(DATABASE_PATH)
+        tls_mgr = TLSManager(CERTS_DIR)
+        if not is_provisioned(db, tls_mgr):
+            print("        System not provisioned — running first-time setup...")
+            ok = provision(db, tls_mgr, broker_host="127.0.0.1")
+            if not ok:
+                print("  [ERROR] Provisioning failed. Cannot start system.")
+                return
+        print("        Security provisioning OK.")
+    except Exception as e:
+        print(f"        Warning: Could not check provisioning: {e}")
 
     try:
         # 1. Start Broker
