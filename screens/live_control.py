@@ -1,18 +1,22 @@
 """
-Live Control Tab — 3-column redesign.
-Left  (~30%): Manipulator Telemetry (preserved)
+Live Control Tab — 3-column layout.
+Left  (~30%): Manipulator Telemetry (connected to live Data Generator telemetry)
 Center (~40%): Interactive 3DOF Robot Simulator
-Right  (~30%): Joint Controls + Robot Controls panels
+Right  (~30%): Joint Controls + Robot Controls + System Health + Active Alerts panels
 """
 import math
 import json
+import logging
+from datetime import datetime
+
+log = logging.getLogger(__name__)
+
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
                              QLabel, QFrame, QProgressBar, QSizePolicy,
                              QPushButton, QSlider, QFileDialog)
-from PyQt6.QtCore import (Qt, QTimer, QPropertyAnimation, QEasingCurve,
-                          pyqtProperty, QPointF)
+from PyQt6.QtCore import Qt, QTimer, QPointF
 from PyQt6.QtGui import (QPainter, QColor, QPen, QFont, QLinearGradient,
-                          QPolygonF)
+                         QPolygonF)
 from widgets.card import MetricCard, PanelFrame
 from theme_manager import ThemeManager
 
@@ -26,6 +30,10 @@ class _StatusDot(QWidget):
         super().__init__(parent)
         self._color = QColor(color)
         self.setFixedSize(10, 10)
+
+    def set_color(self, color: str):
+        self._color = QColor(color)
+        self.update()
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -49,7 +57,7 @@ def coord_box(label, value, unit):
     l = QLabel(label)
     l.setObjectName("TelemetryLabel")
     row = QHBoxLayout()
-    v = QLabel(value)
+    v = QLabel(str(value))
     v.setObjectName("TelemetryValue")
     u = QLabel(unit)
     u.setObjectName("TelemetryUnit")
@@ -59,7 +67,7 @@ def coord_box(label, value, unit):
     row.addStretch()
     lay.addWidget(l)
     lay.addLayout(row)
-    return box
+    return box, v
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -69,6 +77,7 @@ def coord_box(label, value, unit):
 class JointRow(QWidget):
     def __init__(self, code, name, value, vmax, status="OK", level="good"):
         super().__init__()
+        self._vmax = vmax
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 5, 0, 5)
         layout.setSpacing(12)
@@ -83,30 +92,53 @@ class JointRow(QWidget):
         name_lbl.setFixedWidth(110)
         layout.addWidget(name_lbl)
 
-        bar = QProgressBar()
-        bar.setRange(0, vmax)
-        bar.setValue(value)
-        bar.setTextVisible(False)
-        bar.setFixedHeight(6)
+        self._bar = QProgressBar()
+        self._bar.setRange(0, vmax)
+        self._bar.setValue(int(abs(value)))
+        self._bar.setTextVisible(False)
+        self._bar.setFixedHeight(6)
         if level != "good":
-            bar.setProperty("level", level)
-        layout.addWidget(bar, 1)
+            self._bar.setProperty("level", level)
+        layout.addWidget(self._bar, 1)
 
-        val_lbl = QLabel(f"{value}° / {vmax}°")
-        val_lbl.setStyleSheet(
+        self._val_lbl = QLabel(f"{value:.1f}° / {vmax}°")
+        self._val_lbl.setStyleSheet(
             "color:#B5BEC8; font-size:12px; "
             "font-family:'JetBrains Mono','Consolas',monospace;"
         )
-        val_lbl.setFixedWidth(90)
-        layout.addWidget(val_lbl)
+        self._val_lbl.setFixedWidth(90)
+        layout.addWidget(self._val_lbl)
 
-        color = {"good": "#10B981", "caution": "#F59E0B", "critical": "#EF4444"}[level]
-        dot = _StatusDot(color)
-        layout.addWidget(dot)
-        stat_lbl = QLabel(status)
-        stat_lbl.setStyleSheet(f"color:{color}; font-size:11px; font-weight:700;")
-        stat_lbl.setFixedWidth(64)
-        layout.addWidget(stat_lbl)
+        color_map = {"good": "#10B981", "caution": "#F59E0B", "critical": "#EF4444"}
+        color = color_map.get(level, "#10B981")
+        self._dot = _StatusDot(color)
+        layout.addWidget(self._dot)
+
+        self._stat_lbl = QLabel(status)
+        self._stat_lbl.setStyleSheet(f"color:{color}; font-size:11px; font-weight:700;")
+        self._stat_lbl.setFixedWidth(64)
+        layout.addWidget(self._stat_lbl)
+
+    def update_value(self, angle: float, status: str = None, level: str = None):
+        """Update joint angle and visual indicators."""
+        abs_angle = abs(angle)
+        self._bar.setValue(min(int(abs_angle), self._vmax))
+        self._val_lbl.setText(f"{angle:.1f}° / {self._vmax}°")
+
+        if level is None:
+            ratio = abs_angle / max(self._vmax, 1)
+            if ratio > 0.85:
+                level = "caution"
+                status = status or "CAUTION"
+            else:
+                level = "good"
+                status = status or "OK"
+
+        color_map = {"good": "#10B981", "caution": "#F59E0B", "critical": "#EF4444"}
+        color = color_map.get(level, "#10B981")
+        self._dot.set_color(color)
+        self._stat_lbl.setText(status or "OK")
+        self._stat_lbl.setStyleSheet(f"color:{color}; font-size:11px; font-weight:700;")
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -141,7 +173,14 @@ class RobotSimulator(QFrame):
         """Set joint angle (0-indexed). Ignored when motion is locked."""
         if self._motion_locked:
             return
-        self._angles[joint] = deg
+        if 0 <= joint < len(self._angles):
+            self._angles[joint] = deg
+            self.update()
+
+    def set_angles(self, j1: float, j2: float, j3: float):
+        if self._motion_locked:
+            return
+        self._angles = [j1, j2, j3]
         self.update()
 
     def set_motion_lock(self, locked: bool):
@@ -155,11 +194,6 @@ class RobotSimulator(QFrame):
     # ── Kinematics ────────────────────────────────────────────────
 
     def _forward_kinematics(self):
-        """
-        Returns list of (x, y) joint positions starting from base.
-        Coordinate system: base at bottom-center, y-up.
-        Widget coords: y-down, converted at draw time.
-        """
         w, h = self.width(), self.height()
         base_x = w / 2
         base_y = h - 60          # base at bottom
@@ -203,7 +237,6 @@ class RobotSimulator(QFrame):
             x1, y1 = pts[i]
             x2, y2 = pts[i + 1]
 
-            # Gradient link
             grad = QLinearGradient(x1, y1, x2, y2)
             grad.setColorAt(0.0, link_color.lighter(120))
             grad.setColorAt(1.0, link_color)
@@ -220,7 +253,6 @@ class RobotSimulator(QFrame):
 
         for i, (x, y) in enumerate(pts[:-1]):
             r = radii[i]
-            # Glow halo
             glow = QColor(joint_color)
             glow.setAlpha(40)
             p.setBrush(glow)
@@ -228,19 +260,16 @@ class RobotSimulator(QFrame):
             p.drawEllipse(int(x - r - 4), int(y - r - 4),
                           (r + 4) * 2, (r + 4) * 2)
 
-            # Joint body
             p.setBrush(QColor(tm.color("bg_card")))
             p.setPen(QPen(joint_color, 2.5))
             p.drawEllipse(int(x - r), int(y - r), r * 2, r * 2)
 
-            # Joint label
             p.setPen(QColor(tm.color("fg_primary")))
             f = QFont("Inter", 8, QFont.Weight.Bold)
             p.setFont(f)
             p.drawText(int(x - r), int(y - r), r * 2, r * 2,
                        Qt.AlignmentFlag.AlignCenter, labels[i])
 
-            # Angle readout beside joint
             p.setPen(QColor(tm.color("robot_text")))
             f2 = QFont("JetBrains Mono", 9)
             p.setFont(f2)
@@ -327,6 +356,12 @@ class _JointSlider(QWidget):
         self._val_lbl.setText(f"{v}{self._unit}")
         self._on_change(v)
 
+    def set_value(self, v: int):
+        self.slider.blockSignals(True)
+        self.slider.setValue(v)
+        self.slider.blockSignals(False)
+        self._val_lbl.setText(f"{v}{self._unit}")
+
     def set_enabled(self, enabled: bool):
         self.slider.setEnabled(enabled)
 
@@ -345,6 +380,7 @@ class LiveControlScreen(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._motion_enabled = True
+        self._start_time = datetime.now()
 
         outer = QHBoxLayout(self)
         outer.setContentsMargins(0, 14, 0, 0)
@@ -359,53 +395,63 @@ class LiveControlScreen(QWidget):
         # Top metric cards
         cards_row = QHBoxLayout()
         cards_row.setSpacing(10)
-        cards_row.addWidget(MetricCard("Session Uptime", "00:42:18", accent="cyan"))
-        cards_row.addWidget(MetricCard("Control Mode", "TELEOP", sub="Scaling 3:1", accent="cyan"))
-        cards_row.addWidget(MetricCard("Tip Force", "2.4", "N", "Limit 8.0 N", accent="cyan"))
+        self._card_uptime = MetricCard("Session Uptime", "00:00:00", accent="cyan")
+        self._card_control_mode = MetricCard("Control Mode", "TELEOP", sub="Scaling 3:1", accent="cyan")
+        self._card_tip_force = MetricCard("Tip Force", "0.0", "N", "Limit 8.0 N", accent="cyan")
+        cards_row.addWidget(self._card_uptime)
+        cards_row.addWidget(self._card_control_mode)
+        cards_row.addWidget(self._card_tip_force)
         left.addLayout(cards_row)
 
         # Manipulator Telemetry panel
-        live_dot = _StatusDot("#10B981")
-        live_label = QLabel("LIVE")
-        live_label.setObjectName("StatusGood")
+        self._live_dot = _StatusDot("#F59E0B")
+        self._live_label = QLabel("WAITING FOR DATA")
+        self._live_label.setObjectName("StatusCaution")
         live_row = QWidget()
         lr = QHBoxLayout(live_row)
         lr.setContentsMargins(0, 0, 0, 0)
         lr.setSpacing(6)
-        lr.addWidget(live_dot)
-        lr.addWidget(live_label)
+        lr.addWidget(self._live_dot)
+        lr.addWidget(self._live_label)
         telem = PanelFrame("Manipulator Telemetry", right_widget=live_row)
 
         coords = QGridLayout()
         coords.setSpacing(10)
-        coord_data = [
-            ("X", "128.42", "mm"), ("Y", "-22.18", "mm"), ("Z", "318.04", "mm"),
-            ("RX", "1.482", "rad"), ("RY", "-0.215", "rad"), ("RZ", "0.731", "rad"),
+        coord_defs = [
+            ("X", "0.00", "mm"), ("Y", "0.00", "mm"), ("Z", "0.00", "mm"),
+            ("RX", "0.000", "rad"), ("RY", "0.000", "rad"), ("RZ", "0.000", "rad"),
         ]
-        for i, (lab, val, unit) in enumerate(coord_data):
-            coords.addWidget(coord_box(lab, val, unit), 0, i)
+        self._coord_labels = {}
+        for i, (lab, val, unit) in enumerate(coord_defs):
+            box, val_lbl = coord_box(lab, val, unit)
+            self._coord_labels[lab] = val_lbl
+            coords.addWidget(box, 0, i)
         telem.add_layout(coords)
 
         joint_title = QLabel("JOINT LIMIT MONITORING")
         joint_title.setObjectName("SectionTitle")
         telem.add_widget(joint_title)
 
-        joints = [
-            ("J1", "Base Yaw",    28, 180, "OK",      "good"),
-            ("J2", "Shoulder",    62, 120, "OK",      "good"),
-            ("J3", "Elbow",       91, 145, "CAUTION", "caution"),
-            ("J4", "Wrist Pitch", 18,  90, "OK",      "good"),
-            ("J5", "Wrist Roll", 142, 270, "OK",      "good"),
-            ("J6", "Tool Flange",  7, 360, "OK",      "good"),
+        joint_defs = [
+            ("J1", "Base Yaw",    0, 180, "OK", "good"),
+            ("J2", "Shoulder",    0, 120, "OK", "good"),
+            ("J3", "Elbow",       0, 170, "OK", "good"),
+            ("J4", "Wrist Pitch", 0, 120, "OK", "good"),
+            ("J5", "Wrist Roll",  0, 170, "OK", "good"),
+            ("J6", "Tool Flange", 0, 120, "OK", "good"),
         ]
-        for code, name, val, vmax, status, level in joints:
-            telem.add_widget(JointRow(code, name, val, vmax, status, level))
+        self._joint_rows = {}
+        for code, name, val, vmax, status, level in joint_defs:
+            jrow = JointRow(code, name, val, vmax, status, level)
+            self._joint_rows[code] = jrow
+            telem.add_widget(jrow)
 
         footer = QHBoxLayout()
+        self._footer_labels = {}
         for lab, val in [
-            ("Vel Cmd",      "0.42 m/s"),
-            ("Vel Act",      "0.41 m/s"),
-            ("Tremor Filter","ON  ·  12 Hz"),
+            ("Motion State", "IDLE"),
+            ("Servo Status", "NOMINAL"),
+            ("Torque Status", "NOMINAL"),
             ("Scaling",      "3.00 : 1.00"),
         ]:
             box = QVBoxLayout()
@@ -414,6 +460,7 @@ class LiveControlScreen(QWidget):
             l.setObjectName("FieldLabel")
             v = QLabel(val)
             v.setObjectName("FieldValueBold")
+            self._footer_labels[lab] = v
             box.addWidget(l)
             box.addWidget(v)
             footer.addLayout(box)
@@ -440,13 +487,15 @@ class LiveControlScreen(QWidget):
         # Stat row under sim
         stat_row = QHBoxLayout()
         stat_row.setSpacing(12)
+        self._stat_j_vals = {}
         for code, lab in [("J1", "Base Rot"), ("J2", "Shoulder"), ("J3", "Elbow")]:
             cell = QVBoxLayout()
             cell.setSpacing(2)
-            l = QLabel(code)
+            l = QLabel(f"{code} ({lab})")
             l.setObjectName("FieldLabel")
             v = QLabel("0°")
             v.setObjectName("FieldValueBold")
+            self._stat_j_vals[code] = v
             cell.addWidget(l)
             cell.addWidget(v)
             stat_row.addLayout(cell)
@@ -508,18 +557,19 @@ class LiveControlScreen(QWidget):
 
         # ─ System Health panel ─
         health = PanelFrame("System Health")
+        self._health_labels = {}
         for lab, val, color in [
-            ("CPU",        "38%",         "#10B981"),
-            ("GPU 0",      "42%",         "#10B981"),
-            ("RAM",        "14.2 / 64 GB","#E6EDF3"),
-            ("Thermal",    "51 °C",       "#E6EDF3"),
-            ("Storage I/O","184 MB/s",    "#E6EDF3"),
+            ("CPU",        "0%",          "#10B981"),
+            ("Latency",    "0.0 ms",      "#10B981"),
+            ("Robot Mode", "ACTIVE",      "#E6EDF3"),
+            ("Safety Link","ESTABLISHED", "#10B981"),
         ]:
             row = QHBoxLayout()
             l = QLabel(lab)
             l.setObjectName("FieldLabel")
             v = QLabel(val)
             v.setStyleSheet(f"color:{color}; font-size:14px; font-weight:700;")
+            self._health_labels[lab] = v
             row.addWidget(l)
             row.addStretch()
             row.addWidget(v)
@@ -528,29 +578,143 @@ class LiveControlScreen(QWidget):
         right.addWidget(health)
 
         # ─ Active Alerts panel ─
-        alerts = PanelFrame("Active Alerts")
-        alert_data = [
-            ("#F59E0B", "J3 nearing limit",        "T+ 42:11"),
-            ("#10B981", "Tool change verified",     "T+ 39:48"),
-            ("#0095FF", "Phase advanced — Dissection", "T+ 36:02"),
-        ]
-        for color, msg, timestamp in alert_data:
-            row = QHBoxLayout()
-            dot = _StatusDot(color)
-            row.addWidget(dot)
-            row.addSpacing(8)
-            m = QLabel(msg)
-            m.setStyleSheet("font-size:13px; font-weight:500;")
-            row.addWidget(m, 1)
-            t = QLabel(timestamp)
-            t.setObjectName("FieldLabel")
-            row.addWidget(t)
-            alerts.add_layout(row)
-        alerts.add_stretch()
-        right.addWidget(alerts)
+        self._alerts_panel = PanelFrame("Active Alerts")
+        self._alerts_layout = QVBoxLayout()
+        self._alerts_layout.setSpacing(6)
+        self._alerts_panel.add_layout(self._alerts_layout)
+        self._alerts_panel.add_stretch()
+        right.addWidget(self._alerts_panel)
 
         right.addStretch()
         outer.addLayout(right, 25)
+
+        # Uptime clock timer
+        self._uptime_timer = QTimer(self)
+        self._uptime_timer.setInterval(1000)
+        self._uptime_timer.timeout.connect(self._update_uptime)
+        self._uptime_timer.start()
+
+    def _update_uptime(self):
+        delta = datetime.now() - self._start_time
+        hours, remainder = divmod(int(delta.total_seconds()), 3600)
+        minutes, seconds = divmod(remainder, 60)
+        self._card_uptime.set_value(f"{hours:02d}:{minutes:02d}:{seconds:02d}")
+
+    # ── Live Telemetry Updates (from Data Generator via Broker) ───
+
+    def update_telemetry(self, payload: dict):
+        """Update UI fields with real incoming robot telemetry."""
+        if not payload or not isinstance(payload, dict):
+            return
+
+        # 1. Update Connection indicator
+        self._live_dot.set_color("#10B981")
+        self._live_label.setText("LIVE")
+        self._live_label.setStyleSheet("color: #10B981; font-weight: bold;")
+
+        # 2. Coordinates
+        tool_pos = payload.get("tool_position", {})
+        if "x" in tool_pos and "X" in self._coord_labels:
+            self._coord_labels["X"].setText(f"{float(tool_pos['x']):.2f}")
+        if "y" in tool_pos and "Y" in self._coord_labels:
+            self._coord_labels["Y"].setText(f"{float(tool_pos['y']):.2f}")
+        if "z" in tool_pos and "Z" in self._coord_labels:
+            self._coord_labels["Z"].setText(f"{float(tool_pos['z']):.2f}")
+
+        ee_rot = payload.get("end_effector_rotation", 0.0)
+        if "RX" in self._coord_labels:
+            self._coord_labels["RX"].setText(f"{ee_rot:.3f}")
+
+        # 3. Joint Angles
+        joint_angles = payload.get("joint_angles", {})
+        for i in range(1, 7):
+            key = f"j{i}"
+            code = f"J{i}"
+            if key in joint_angles and code in self._joint_rows:
+                angle_val = float(joint_angles[key])
+                self._joint_rows[code].update_value(angle_val)
+
+        # 4. Robot Simulator (3DOF: J1, J2, J3)
+        if "j1" in joint_angles and "j2" in joint_angles and "j3" in joint_angles:
+            j1 = float(joint_angles["j1"])
+            j2 = float(joint_angles["j2"])
+            j3 = float(joint_angles["j3"])
+            self.robot.set_angles(j1, j2, j3)
+            if "J1" in self._stat_j_vals:
+                self._stat_j_vals["J1"].setText(f"{int(j1)}°")
+            if "J2" in self._stat_j_vals:
+                self._stat_j_vals["J2"].setText(f"{int(j2)}°")
+            if "J3" in self._stat_j_vals:
+                self._stat_j_vals["J3"].setText(f"{int(j3)}°")
+
+        # 5. Metrics & Status
+        if "force" in payload:
+            self._card_tip_force.set_value(f"{float(payload['force']):.1f}")
+
+        if "motion_state" in payload and "Motion State" in self._footer_labels:
+            self._footer_labels["Motion State"].setText(str(payload["motion_state"]))
+
+        if "servo_status" in payload and "Servo Status" in self._footer_labels:
+            self._footer_labels["Servo Status"].setText(str(payload["servo_status"]))
+
+        if "torque_status" in payload and "Torque Status" in self._footer_labels:
+            self._footer_labels["Torque Status"].setText(str(payload["torque_status"]))
+
+        # 6. System Health
+        if "cpu_usage" in payload and "CPU" in self._health_labels:
+            self._health_labels["CPU"].setText(f"{float(payload['cpu_usage']):.1f}%")
+
+        if "latency" in payload and "Latency" in self._health_labels:
+            self._health_labels["Latency"].setText(f"{float(payload['latency']):.2f} ms")
+
+        if "robot_status" in payload and "Robot Mode" in self._health_labels:
+            self._health_labels["Robot Mode"].setText(str(payload["robot_status"]))
+
+    def update_alerts(self, alert: dict):
+        """Add newly arrived alert to the Active Alerts list."""
+        if not alert or not isinstance(alert, dict):
+            return
+
+        sev = alert.get("severity", "INFO").upper()
+        msg = alert.get("message", "System notification")
+        ts = alert.get("timestamp", datetime.now().strftime("%H:%M:%S"))
+
+        sev_colors = {
+            "CRITICAL": "#EF4444",
+            "WARNING": "#F59E0B",
+            "INFO": "#0095FF",
+        }
+        color = sev_colors.get(sev, "#10B981")
+
+        row = QHBoxLayout()
+        dot = _StatusDot(color)
+        row.addWidget(dot)
+        row.addSpacing(8)
+
+        m = QLabel(msg)
+        m.setStyleSheet("font-size:13px; font-weight:500; color:#E6EDF3;")
+        row.addWidget(m, 1)
+
+        t = QLabel(ts.split(" ")[-1] if " " in ts else ts)
+        t.setObjectName("FieldLabel")
+        row.addWidget(t)
+
+        self._alerts_layout.insertLayout(0, row)
+
+        # Keep max 10 visible alerts in UI
+        while self._alerts_layout.count() > 10:
+            item = self._alerts_layout.takeAt(self._alerts_layout.count() - 1)
+            if item.layout():
+                while item.layout().count():
+                    w = item.layout().takeAt(0).widget()
+                    if w:
+                        w.deleteLater()
+
+    def set_telemetry_disconnected(self):
+        """Set telemetry state to disconnected/stale."""
+        self._live_dot.set_color("#EF4444")
+        self._live_label.setText("DISCONNECTED")
+        self._live_label.setStyleSheet("color: #EF4444; font-weight: bold;")
 
     # ── Robot Control Handlers ─────────────────────────────────────
 
@@ -583,7 +747,7 @@ class LiveControlScreen(QWidget):
         if not path:
             return
         try:
-            with open(path, "r") as f:
+            with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             j1 = float(data.get("j1", 0))
             j2 = float(data.get("j2", 0))
@@ -595,5 +759,6 @@ class LiveControlScreen(QWidget):
             self._s_j1.slider.setValue(int(j1))
             self._s_j2.slider.setValue(int(j2))
             self._s_j3.slider.setValue(int(j3))
+            log.info(f"Loaded joint config from {path}: J1={j1}, J2={j2}, J3={j3}")
         except Exception as e:
-            pass   # Silently ignore malformed JSON in UI-only mode
+            log.error(f"Failed to load JSON joint config from {path}: {e}")

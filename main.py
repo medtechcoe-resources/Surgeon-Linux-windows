@@ -23,11 +23,16 @@ from screens.live_control import LiveControlScreen
 from screens.settings import SettingsScreen
 from screens.comm_center import CommCenterScreen
 
+from models.patient_vitals_model import PatientVitalsModel
+
 from shared_networking.connection_manager import ConnectionManager
 from shared_networking.database import AetherDatabase
 from shared_networking.authentication import AuthManager
 from shared_networking.login_dialog import LoginDialog
 from shared_networking.config import DATABASE_PATH
+
+
+from shared_networking.video_stream import VideoReceiver
 
 
 class AetherConsole(QMainWindow):
@@ -103,13 +108,18 @@ class AetherConsole(QMainWindow):
                 "patient_vitals",
                 "robot_telemetry", "alerts",
                 "connection_status", "system_status",
-                "video_broadcast",
             ],
             username=username,
             role=role,
             session_id=session_id,
         )
         self._conn_manager.enable_auto_reconnect(True)
+
+        # Dedicated TCP Video Receiver on Port 5001
+        self.video_receiver = VideoReceiver(parent=self)
+        self.video_receiver.frame_received.connect(self.live_video.update_frame)
+        self.video_receiver.status_changed.connect(self._on_video_status_changed)
+        self.video_receiver.start()
 
         # Wire Comm Center to connection manager
         self.comm_center.set_connection_manager(self._conn_manager)
@@ -122,27 +132,48 @@ class AetherConsole(QMainWindow):
         # Wire Live Video to connection manager
         self.live_video.set_connection_manager(self._conn_manager)
 
+        # Authoritative Patient Vitals Model (Single source of truth)
+        self.patient_vitals_model = PatientVitalsModel(parent=self)
+        self.sidebar.set_vitals_model(self.patient_vitals_model)
+        self.live_video.set_vitals_model(self.patient_vitals_model)
+
         # Route messages to appropriate screens
         self._conn_manager.message_received.connect(self._on_message_received)
+        self._conn_manager.disconnected.connect(self._on_broker_disconnected)
 
         # Auto-connect to broker on startup
         self._conn_manager.connect_to_broker()
 
-    def _on_message_received(self, topic: str, payload: dict):
-        if topic == "video_broadcast":
-            import base64
-            from PyQt6.QtGui import QImage
-            try:
-                b64 = payload.get("frame", "")
-                if b64:
-                    data = base64.b64decode(b64)
-                    img = QImage.fromData(data)
-                    self.live_video.update_frame(img)
-            except Exception as e:
-                log.warning(f"Video frame decode error: {e}")
+    def _on_video_status_changed(self, status: str):
+        if status == "Disconnected":
+            self.live_video.on_stream_disconnected()
+
+    def _on_broker_disconnected(self):
+        """Handle broker disconnection by marking telemetry and vitals disconnected/stale in UI."""
+        if hasattr(self, 'live_control'):
+            self.live_control.set_telemetry_disconnected()
+        if hasattr(self, 'patient_vitals_model'):
+            self.patient_vitals_model.set_disconnected()
+
+    def _on_message_received(self, topic: str, message: dict):
+        """Route incoming pub-sub messages to registered UI screens."""
+        if not isinstance(message, dict):
+            return
+        payload = message.get("payload", {})
+        if not isinstance(payload, dict):
+            payload = {}
+
+        if topic == "robot_telemetry":
+            self.live_control.update_telemetry(payload)
+        elif topic == "alerts":
+            self.live_control.update_alerts(payload)
+        elif topic == "patient_vitals":
+            self.patient_vitals_model.update_vitals(payload)
 
     def closeEvent(self, event):
         """Clean up networking on window close."""
+        if hasattr(self, 'video_receiver'):
+            self.video_receiver.stop()
         self._conn_manager.cleanup()
         event.accept()
 

@@ -169,15 +169,31 @@ class PatientSidebar(QWidget):
 
         # --- Patient Vitals card ---
         vitals_card = SidebarCard("Patient Vitals")
+        v_title_row = QHBoxLayout()
+        v_title = QLabel("PATIENT VITALS")
+        v_title.setObjectName("SidebarSectionTitle")
+        self._vitals_status_label = QLabel("NO DATA")
+        self._vitals_status_label.setStyleSheet("color: #94A3B8; font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 4px; background: rgba(148, 163, 184, 0.15);")
+        v_title_row.addWidget(v_title)
+        v_title_row.addStretch()
+        v_title_row.addWidget(self._vitals_status_label)
+        # Replace the default title widget added by SidebarCard with the row
+        if vitals_card.layout.count() > 0:
+            old_title = vitals_card.layout.takeAt(0).widget()
+            if old_title:
+                old_title.deleteLater()
+        vitals_card.layout.addLayout(v_title_row)
+
         vitals_grid = QGridLayout()
         vitals_grid.setSpacing(8)
-        vitals_data = [
-            ("HR", "74", "bpm", "#10B981", 0, 0),
-            ("SpO\u2082", "98", "%", "#10B981", 0, 1),
-            ("BP", "118/74", "mmHg", "#F5F7FA", 1, 0),
-            ("Temp", "36.8", "\u00B0C", "#F5F7FA", 1, 1),
+        vitals_config = [
+            ("HR", "bpm", 0, 0),
+            ("SpO\u2082", "%", 0, 1),
+            ("BP", "mmHg", 1, 0),
+            ("Temp", "\u00B0C", 1, 1),
         ]
-        for label, value, unit, val_color, row_idx, col_idx in vitals_data:
+        self._vital_val_labels = {}
+        for label, unit, row_idx, col_idx in vitals_config:
             cell = QFrame()
             cell.setObjectName("Card")
             cell_lay = QVBoxLayout(cell)
@@ -185,9 +201,12 @@ class PatientSidebar(QWidget):
             cell_lay.setSpacing(2)
             lab = QLabel(label)
             lab.setObjectName("VitalLabel")
-            val = QLabel(value)
+            val = QLabel("--")
             val.setObjectName("VitalValue")
-            val.setStyleSheet(f"font-size: 28px; color: {val_color};")
+            val.setStyleSheet("font-size: 26px; color: #94A3B8;")
+            key = "SpO2" if "SpO" in label else label
+            self._vital_val_labels[key] = val
+
             un = QLabel(unit)
             un.setObjectName("VitalUnit")
             cell_lay.addWidget(lab)
@@ -238,3 +257,61 @@ class PatientSidebar(QWidget):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.addWidget(scroll)
+
+    def set_vitals_model(self, model):
+        """Connect to the Authoritative PatientVitalsModel."""
+        self._vitals_model = model
+        model.vitals_updated.connect(self.update_vitals)
+        self.update_vitals(model.get_display_data())
+
+    def update_vitals(self, data: dict):
+        """Update vitals displays from authoritative model data dictionary."""
+        if not isinstance(data, dict):
+            return
+
+        hr_str = data.get("hr", "--")
+        spo2_str = data.get("spo2", "--")
+        bp_str = data.get("bp", "--")
+        temp_str = data.get("temperature", "--")
+        status = data.get("status", "NO DATA")
+        is_live = data.get("is_live", False)
+        is_stale = data.get("is_stale", False)
+
+        if "HR" in self._vital_val_labels:
+            self._vital_val_labels["HR"].setText(str(hr_str))
+        if "SpO2" in self._vital_val_labels:
+            self._vital_val_labels["SpO2"].setText(str(spo2_str))
+        if "BP" in self._vital_val_labels:
+            self._vital_val_labels["BP"].setText(str(bp_str))
+        if "Temp" in self._vital_val_labels:
+            self._vital_val_labels["Temp"].setText(str(temp_str))
+
+        self.set_vitals_status(status, is_live, is_stale)
+
+    def set_vitals_status(self, status: str, is_live: bool = False, is_stale: bool = False):
+        """Update vitals status badge and color theme."""
+        status_styles = {
+            "LIVE": ("color: #10B981; background: rgba(16, 185, 129, 0.15);", "#10B981", "#38BDF8", "#F5F7FA", "#F5F7FA"),
+            "STALE": ("color: #F59E0B; background: rgba(245, 158, 11, 0.15);", "#F59E0B", "#F59E0B", "#F59E0B", "#F59E0B"),
+            "DISCONNECTED": ("color: #EF4444; background: rgba(239, 68, 68, 0.15);", "#94A3B8", "#94A3B8", "#94A3B8", "#94A3B8"),
+            "NO DATA": ("color: #94A3B8; background: rgba(148, 163, 184, 0.15);", "#94A3B8", "#94A3B8", "#94A3B8", "#94A3B8"),
+            "INVALID": ("color: #EF4444; background: rgba(239, 68, 68, 0.15);", "#94A3B8", "#94A3B8", "#94A3B8", "#94A3B8"),
+        }
+        badge_style, c_hr, c_spo2, c_bp, c_temp = status_styles.get(
+            status, ("color: #94A3B8; background: rgba(148, 163, 184, 0.15);", "#94A3B8", "#94A3B8", "#94A3B8", "#94A3B8")
+        )
+
+        self._vitals_status_label.setText(status)
+        self._vitals_status_label.setStyleSheet(
+            f"font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 4px; {badge_style}"
+        )
+
+        if "HR" in self._vital_val_labels:
+            self._vital_val_labels["HR"].setStyleSheet(f"font-size: 26px; color: {c_hr};")
+        if "SpO2" in self._vital_val_labels:
+            self._vital_val_labels["SpO2"].setStyleSheet(f"font-size: 26px; color: {c_spo2};")
+        if "BP" in self._vital_val_labels:
+            self._vital_val_labels["BP"].setStyleSheet(f"font-size: 26px; color: {c_bp};")
+        if "Temp" in self._vital_val_labels:
+            self._vital_val_labels["Temp"].setStyleSheet(f"font-size: 26px; color: {c_temp};")
+

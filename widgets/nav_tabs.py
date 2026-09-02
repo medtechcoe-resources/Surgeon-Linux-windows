@@ -5,8 +5,8 @@ Reduced to 4 tabs: Pre-Op, Live Video, Live Control, Settings.
 """
 import math
 from PyQt6.QtWidgets import QWidget, QHBoxLayout, QPushButton, QSizePolicy
-from PyQt6.QtCore import Qt, pyqtSignal, QRectF, QPointF, QPropertyAnimation, QEasingCurve
-from PyQt6.QtGui import QPainter, QColor, QPen, QFont, QPolygonF
+from PyQt6.QtCore import Qt, pyqtSignal, QRectF, QPointF, QPropertyAnimation, QEasingCurve, QSize
+from PyQt6.QtGui import QPainter, QColor, QPen, QFont, QPolygonF, QFontMetrics
 
 from theme_manager import ThemeManager
 
@@ -91,12 +91,25 @@ class _IconTabButton(QPushButton):
         self._active = False
         self._hover = False
 
-        # Calculate width from text
-        self.setMinimumWidth(110)
+        # Calculate comfortable width dynamically from text + icon + padding
+        fm = QFontMetrics(QFont("Inter", 13, QFont.Weight.DemiBold))
+        text_width = fm.horizontalAdvance(self._label)
+        calculated_w = 42 + text_width + 20
+        self.setMinimumWidth(max(130, calculated_w))
         self.setFixedHeight(44)
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
 
         tm = ThemeManager.instance()
         tm.theme_changed.connect(self._on_theme)
+
+    def sizeHint(self) -> QSize:
+        fm = QFontMetrics(QFont("Inter", 13, QFont.Weight.DemiBold))
+        text_width = fm.horizontalAdvance(self._label)
+        calculated_w = 42 + text_width + 20
+        return QSize(max(130, calculated_w), 44)
+
+    def minimumSizeHint(self) -> QSize:
+        return self.sizeHint()
 
     def _on_theme(self, _):
         self.update()
@@ -138,18 +151,18 @@ class _IconTabButton(QPushButton):
 
         w, h = self.width(), self.height()
 
-        # Icon on left side
-        icon_cx = 18
+        # Icon on left side with comfortable positioning
+        icon_cx = 20
         icon_cy = h // 2 - 2
 
         self._icon_fn(p, icon_cx, icon_cy, icon_color)
 
-        # Label text
+        # Label text with ample padding to avoid clipping
         p.setPen(text_color)
         weight = QFont.Weight.DemiBold if self._active else QFont.Weight.Medium
         font = QFont("Inter", 13, weight)
         p.setFont(font)
-        text_rect = self.rect().adjusted(34, 2, -4, 0)
+        text_rect = self.rect().adjusted(38, 2, -8, 0)
         p.drawText(text_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
                    self._label)
         p.end()
@@ -175,7 +188,7 @@ class NavBar(QWidget):
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(24, 0, 24, 0)
-        layout.setSpacing(4)
+        layout.setSpacing(12)
 
         self.buttons: list[_IconTabButton] = []
         for i, (name, icon_fn) in enumerate(self.TABS):

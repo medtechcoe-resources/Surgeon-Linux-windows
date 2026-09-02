@@ -79,7 +79,7 @@ class _ThemeButton(QPushButton):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("ThemeToggle")
-        self.setFixedSize(100, 44)
+        self.setFixedSize(104, 44)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setText("")
         tm = ThemeManager.instance()
@@ -98,7 +98,7 @@ class _ThemeButton(QPushButton):
         text_color = QColor(tm.color("fg_primary"))
         icon_color = QColor(tm.color("accent_amber"))
 
-        cx, cy = 22, self.height() // 2
+        cx, cy = 20, self.height() // 2
 
         if self._is_dark:
             # Moon icon
@@ -128,7 +128,7 @@ class _ThemeButton(QPushButton):
         p.setPen(text_color)
         font = QFont("Inter", 11, QFont.Weight.Bold)
         p.setFont(font)
-        text_rect = self.rect().adjusted(34, 0, -4, 0)
+        text_rect = self.rect().adjusted(38, 0, -4, 0)
         p.drawText(text_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
                    label)
         p.end()
@@ -144,7 +144,7 @@ class Header(QWidget):
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(20, 0, 20, 0)
-        layout.setSpacing(12)
+        layout.setSpacing(14)
 
         # ── Brand ──
         badge = _LogoBadge()

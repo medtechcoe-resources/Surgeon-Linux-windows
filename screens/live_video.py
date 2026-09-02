@@ -17,7 +17,7 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                              QFrame, QPushButton, QSlider, QSizePolicy,
                              QFileDialog, QScrollArea, QSpacerItem,
                              QGridLayout)
-from PyQt6.QtCore import Qt, QTimer, QPointF
+from PyQt6.QtCore import Qt, QTimer, QPointF, QRectF
 from PyQt6.QtGui import (QPainter, QColor, QRadialGradient, QPen, QFont,
                           QPixmap, QImage, QPolygonF, QTransform)
 from widgets.card import MetricCard, PanelFrame
@@ -299,18 +299,25 @@ class _FeedCanvas(QFrame):
         w, h = self.width(), self.height()
 
         if self._pixmap and not self._pixmap.isNull():
-            # Scale the pixmap to fill the widget
-            scaled = self._pixmap.scaled(
-                int(w * self._zoom), int(h * self._zoom),
-                Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-                Qt.TransformationMode.SmoothTransformation
-            )
-            # Calculate center offset with pan
-            sx = (scaled.width() - w) // 2 - int(self._pan_offset.x() * self._zoom)
-            sy = (scaled.height() - h) // 2 - int(self._pan_offset.y() * self._zoom)
-            sx = max(0, min(scaled.width() - w, sx))
-            sy = max(0, min(scaled.height() - h, sy))
-            p.drawPixmap(0, 0, scaled, sx, sy, w, h)
+            pw, ph = self._pixmap.width(), self._pixmap.height()
+            canvas_ar = w / max(h, 1)
+            pix_ar = pw / max(ph, 1)
+
+            if pix_ar > canvas_ar:
+                src_h = ph / self._zoom
+                src_w = (ph * canvas_ar) / self._zoom
+            else:
+                src_w = pw / self._zoom
+                src_h = (pw / canvas_ar) / self._zoom
+
+            src_x = (pw - src_w) / 2.0 - (self._pan_offset.x() * (pw / max(w, 1)))
+            src_y = (ph - src_h) / 2.0 - (self._pan_offset.y() * (ph / max(h, 1)))
+            src_x = max(0.0, min(pw - src_w, src_x))
+            src_y = max(0.0, min(ph - src_h, src_y))
+
+            src_rect = QRectF(src_x, src_y, src_w, src_h)
+            target_rect = QRectF(0.0, 0.0, float(w), float(h))
+            p.drawPixmap(target_rect, self._pixmap, src_rect)
         else:
             if tm.is_dark():
                 grad = QRadialGradient(w / 2, h / 2, max(w, h) * 0.7)
@@ -473,6 +480,134 @@ def _divider() -> QFrame:
 
 
 # ═══════════════════════════════════════════════════════════════════
+#  PATIENT VITALS HUD OVERLAY (Floating Canvas Widget)
+# ═══════════════════════════════════════════════════════════════════
+
+class _VitalsHUD(QFrame):
+    """Compact translucent surgical overlay HUD floating over live video canvas."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("VitalsHUD")
+        self.setFixedSize(286, 62)
+        self.setStyleSheet("""
+            QFrame#VitalsHUD {
+                background-color: rgba(13, 17, 23, 0.72);
+                border: 1px solid rgba(255, 255, 255, 0.14);
+                border-radius: 6px;
+            }
+        """)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 6, 10, 6)
+        layout.setSpacing(4)
+
+        # Row 1: HR, SpO2, Status Badge
+        r1 = QHBoxLayout()
+        r1.setContentsMargins(0, 0, 0, 0)
+        r1.setSpacing(6)
+
+        lbl_hr = QLabel("♥ HR")
+        lbl_hr.setStyleSheet("color: #94A3B8; font-size: 10px; font-weight: 700; font-family: 'Inter', sans-serif;")
+        self.val_hr = QLabel("--")
+        self.val_hr.setStyleSheet("color: #10B981; font-size: 13px; font-weight: 700; font-family: 'JetBrains Mono', 'Consolas', monospace;")
+        unit_hr = QLabel("bpm")
+        unit_hr.setStyleSheet("color: #64748B; font-size: 9px; font-family: 'Inter', sans-serif;")
+
+        sep1 = QLabel("|")
+        sep1.setStyleSheet("color: rgba(255, 255, 255, 0.18); font-size: 10px;")
+
+        lbl_spo2 = QLabel("SpO₂")
+        lbl_spo2.setStyleSheet("color: #94A3B8; font-size: 10px; font-weight: 700; font-family: 'Inter', sans-serif;")
+        self.val_spo2 = QLabel("--")
+        self.val_spo2.setStyleSheet("color: #38BDF8; font-size: 13px; font-weight: 700; font-family: 'JetBrains Mono', 'Consolas', monospace;")
+        unit_spo2 = QLabel("%")
+        unit_spo2.setStyleSheet("color: #64748B; font-size: 9px; font-family: 'Inter', sans-serif;")
+
+        self.status_badge = QLabel("NO DATA")
+        self.status_badge.setStyleSheet("color: #94A3B8; font-size: 9px; font-weight: 700; padding: 1px 5px; border-radius: 3px; background: rgba(148, 163, 184, 0.16);")
+
+        r1.addWidget(lbl_hr)
+        r1.addWidget(self.val_hr)
+        r1.addWidget(unit_hr)
+        r1.addSpacing(2)
+        r1.addWidget(sep1)
+        r1.addSpacing(2)
+        r1.addWidget(lbl_spo2)
+        r1.addWidget(self.val_spo2)
+        r1.addWidget(unit_spo2)
+        r1.addStretch()
+        r1.addWidget(self.status_badge)
+        layout.addLayout(r1)
+
+        # Row 2: BP, Temp
+        r2 = QHBoxLayout()
+        r2.setContentsMargins(0, 0, 0, 0)
+        r2.setSpacing(6)
+
+        lbl_bp = QLabel("BP")
+        lbl_bp.setStyleSheet("color: #94A3B8; font-size: 10px; font-weight: 700; font-family: 'Inter', sans-serif;")
+        self.val_bp = QLabel("--")
+        self.val_bp.setStyleSheet("color: #F5F7FA; font-size: 13px; font-weight: 700; font-family: 'JetBrains Mono', 'Consolas', monospace;")
+        unit_bp = QLabel("mmHg")
+        unit_bp.setStyleSheet("color: #64748B; font-size: 9px; font-family: 'Inter', sans-serif;")
+
+        sep2 = QLabel("|")
+        sep2.setStyleSheet("color: rgba(255, 255, 255, 0.18); font-size: 10px;")
+
+        lbl_temp = QLabel("TEMP")
+        lbl_temp.setStyleSheet("color: #94A3B8; font-size: 10px; font-weight: 700; font-family: 'Inter', sans-serif;")
+        self.val_temp = QLabel("--")
+        self.val_temp.setStyleSheet("color: #F5F7FA; font-size: 13px; font-weight: 700; font-family: 'JetBrains Mono', 'Consolas', monospace;")
+        unit_temp = QLabel("°C")
+        unit_temp.setStyleSheet("color: #64748B; font-size: 9px; font-family: 'Inter', sans-serif;")
+
+        r2.addWidget(lbl_bp)
+        r2.addWidget(self.val_bp)
+        r2.addWidget(unit_bp)
+        r2.addSpacing(2)
+        r2.addWidget(sep2)
+        r2.addSpacing(2)
+        r2.addWidget(lbl_temp)
+        r2.addWidget(self.val_temp)
+        r2.addWidget(unit_temp)
+        r2.addStretch()
+        layout.addLayout(r2)
+
+    def update_vitals(self, data: dict):
+        if not isinstance(data, dict):
+            return
+        hr_str = data.get("hr", "--")
+        spo2_str = data.get("spo2", "--")
+        bp_str = data.get("bp", "--")
+        temp_str = data.get("temperature", "--")
+        status = data.get("status", "NO DATA")
+
+        self.val_hr.setText(str(hr_str))
+        self.val_spo2.setText(str(spo2_str))
+        self.val_bp.setText(str(bp_str))
+        self.val_temp.setText(str(temp_str))
+
+        status_styles = {
+            "LIVE": ("color: #10B981; background: rgba(16, 185, 129, 0.18);", "#10B981", "#38BDF8", "#F5F7FA", "#F5F7FA"),
+            "STALE": ("color: #F59E0B; background: rgba(245, 158, 11, 0.18);", "#F59E0B", "#F59E0B", "#F59E0B", "#F59E0B"),
+            "DISCONNECTED": ("color: #EF4444; background: rgba(239, 68, 68, 0.18);", "#94A3B8", "#94A3B8", "#94A3B8", "#94A3B8"),
+            "NO DATA": ("color: #94A3B8; background: rgba(148, 163, 184, 0.18);", "#94A3B8", "#94A3B8", "#94A3B8", "#94A3B8"),
+            "INVALID": ("color: #EF4444; background: rgba(239, 68, 68, 0.18);", "#94A3B8", "#94A3B8", "#94A3B8", "#94A3B8"),
+        }
+        badge_style, c_hr, c_spo2, c_bp, c_temp = status_styles.get(
+            status, ("color: #94A3B8; background: rgba(148, 163, 184, 0.18);", "#94A3B8", "#94A3B8", "#94A3B8", "#94A3B8")
+        )
+        self.status_badge.setText(status)
+        self.status_badge.setStyleSheet(f"font-size: 9px; font-weight: 700; padding: 1px 5px; border-radius: 3px; {badge_style}")
+
+        self.val_hr.setStyleSheet(f"color: {c_hr}; font-size: 13px; font-weight: 700; font-family: 'JetBrains Mono', 'Consolas', monospace;")
+        self.val_spo2.setStyleSheet(f"color: {c_spo2}; font-size: 13px; font-weight: 700; font-family: 'JetBrains Mono', 'Consolas', monospace;")
+        self.val_bp.setStyleSheet(f"color: {c_bp}; font-size: 13px; font-weight: 700; font-family: 'JetBrains Mono', 'Consolas', monospace;")
+        self.val_temp.setStyleSheet(f"color: {c_temp}; font-size: 13px; font-weight: 700; font-family: 'JetBrains Mono', 'Consolas', monospace;")
+
+
+# ═══════════════════════════════════════════════════════════════════
 #  MAIN LIVE VIDEO SCREEN
 # ═══════════════════════════════════════════════════════════════════
 
@@ -490,6 +625,7 @@ class LiveVideoScreen(QWidget):
         # YOLO Pipeline
         self.pipeline = YoloPipeline(self)
         self.pipeline.frame_ready.connect(self._on_frame)
+        self.pipeline.raw_frame_ready.connect(self._on_raw_frame)
         self.pipeline.stats_updated.connect(self._on_stats)
         self.pipeline.status_changed.connect(self._on_status)
 
@@ -578,6 +714,31 @@ class LiveVideoScreen(QWidget):
         self.btn_broadcast_cam.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_broadcast_cam.clicked.connect(self._broadcast_camera)
         left.addWidget(self.btn_broadcast_cam)
+
+        self.btn_stop_video = QPushButton("Stop Video")
+        self.btn_stop_video.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_stop_video.setStyleSheet("""
+            QPushButton {
+                background-color: #2D1A1E;
+                color: #EF4444;
+                border: 1px solid #7F1D1D;
+                border-radius: 6px;
+                padding: 8px 14px;
+                font-weight: 700;
+                font-size: 13px;
+            }
+            QPushButton:hover {
+                background-color: #7F1D1D;
+                color: #FFFFFF;
+                border: 1px solid #DC2626;
+            }
+            QPushButton:pressed {
+                background-color: #991B1B;
+                color: #FFFFFF;
+            }
+        """)
+        self.btn_stop_video.clicked.connect(self._stop_video)
+        left.addWidget(self.btn_stop_video)
 
         self.btn_yolo = QPushButton("YOLO Detection")
         self.btn_yolo.setProperty("class", "ToggleButton")
@@ -685,6 +846,12 @@ class LiveVideoScreen(QWidget):
         self.btn_pause.clicked.connect(self._toggle_pause)
         self.btn_pause.setParent(self._canvas_container)
         self.btn_pause.raise_()
+
+        # Floating Patient Vitals HUD overlay
+        self.vitals_hud = _VitalsHUD(parent=self._canvas_container)
+        self.vitals_hud.move(16, 16)
+        self.vitals_hud.raise_()
+        self.vitals_hud.setVisible(False)
 
         center.addWidget(self._canvas_container, 1)
 
@@ -854,24 +1021,35 @@ class LiveVideoScreen(QWidget):
         self._rec_timer.timeout.connect(self._blink_rec)
         self._rec_timer.start(800)
 
-    # ── Resize: reposition floating pause button ──────────────────
+    # ── Resize: reposition floating overlays ──────────────────────────
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        self._reposition_pause_btn()
+        self._reposition_overlays()
 
-    def _reposition_pause_btn(self):
+    def _reposition_overlays(self):
         if hasattr(self, 'btn_pause') and hasattr(self, '_canvas_container'):
             cw = self._canvas_container.width()
             self.btn_pause.move(cw - 56, 12)
+        if hasattr(self, 'vitals_hud'):
+            self.vitals_hud.move(16, 16)
+
+    def _reposition_pause_btn(self):
+        self._reposition_overlays()
 
     def showEvent(self, event):
         super().showEvent(event)
-        QTimer.singleShot(50, self._reposition_pause_btn)
+        QTimer.singleShot(50, self._reposition_overlays)
 
     # ── Frame / Stats Callbacks ────────────────────────────────────────
 
+    def _on_raw_frame(self, raw_qimage):
+        """Broadcast clean raw source frame without burnt-in overlays to network (Surgeon Console)."""
+        if self.broadcaster and self.mode == "robot":
+            self.broadcaster.broadcast_qimage(raw_qimage)
+
     def _on_frame(self, qimage):
+        """Update local canvas with local overlays (YOLO boxes/vitals)."""
         if self._paused:
             return
         self.canvas.set_frame(qimage)
@@ -882,24 +1060,40 @@ class LiveVideoScreen(QWidget):
             self.meta_label.setText(
                 f"{info['width']}\u00D7{info['height']}  \u00B7  H.265"
             )
-        
-        # Broadcast the frame if broadcaster is present
-        if self.broadcaster:
-            self.broadcaster.broadcast_qimage(qimage)
 
     def update_frame(self, qimage):
-        """Called by Surgeon Console when a broadcast frame arrives."""
-        if self._paused:
+        """Called by Surgeon Console when a broadcast frame arrives over TCP 5001."""
+        if self._paused or qimage is None or qimage.isNull():
             return
         # If we have an active local source running, do not let incoming network frames overwrite the canvas
         if self.pipeline.video_running:
             return
-        self.canvas.set_frame(qimage)
-        self._frame_count += 1
-        self.frame_lbl.setText(f"FRAME {self._frame_count:07d}")
-        self.meta_label.setText(
-            f"{qimage.width()}\u00D7{qimage.height()}  \u00B7  H.265"
-        )
+
+        self._s_broadcast.set_value("LIVE")
+        self._s_broadcast.set_color("#10B981")
+        self._s_camera.set_value("REMOTE")
+        self._s_camera.set_color("#10B981")
+
+        # Process through YOLO & Vitals pipeline (runs inference/overlays if enabled)
+        self.pipeline.process_incoming_qimage(qimage)
+
+    def on_stream_disconnected(self):
+        """Called when video stream terminates or disconnects."""
+        self._s_broadcast.set_value("IDLE")
+        self._s_broadcast.reset_color()
+        self._s_camera.set_value("OFF")
+        self._s_camera.reset_color()
+        self._s_recording.set_value("OFF")
+        self._s_recording.reset_color()
+        self._s_objects.set_value("0")
+        self._s_objects.reset_color()
+        self._s_confidence.set_value("--")
+        self._s_confidence.reset_color()
+        self.canvas.clear_frame()
+        self.meta_label.setText("NO ACTIVE STREAM")
+        self.frame_lbl.setText("FRAME 0000000")
+        self.status_label.setText("Broadcast ended — Waiting")
+        self.message_center.add_message("Video broadcast ended")
 
     def _on_stats(self, stats):
         # Detection summary rows
@@ -955,14 +1149,13 @@ class LiveVideoScreen(QWidget):
         except ImportError:
             import sys
             import os
-            # If running from main.py in the root (Surgeon Console), services is in Robot-Console/services
             root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             robot_console_dir = os.path.join(root_dir, "Robot-Console")
             if robot_console_dir not in sys.path:
                 sys.path.insert(0, robot_console_dir)
             from services.video_broadcaster import VideoBroadcastService
 
-        self.broadcaster = VideoBroadcastService(conn_manager, self)
+        self.broadcaster = VideoBroadcastService(conn_manager=conn_manager, parent=self)
         self.broadcaster.fps_updated.connect(self._on_broadcaster_fps)
         self.broadcaster.status_changed.connect(self._on_status)
 
@@ -977,9 +1170,6 @@ class LiveVideoScreen(QWidget):
         )
         if path:
             self.pipeline.load_video(path)
-            if self.broadcaster:
-                self.broadcaster._mode = "video"
-                self.broadcaster._source = path
             # Visual state: mark as active
             self.btn_load_video.setProperty("active", "true")
             self.btn_load_video.setText("Video Loaded")
@@ -991,30 +1181,60 @@ class LiveVideoScreen(QWidget):
             self._s_camera.set_color("#10B981")
             self._s_recording.set_value("VIDEO")
             self._s_recording.set_color("#0095FF")
+            self.status_label.setText(f"Loaded: {_os.path.basename(path)}")
 
     def _broadcast_camera(self):
         cam_active = self.btn_broadcast_cam.property("active") == "true"
         if cam_active:
-            # Stop camera broadcasting
-            self.pipeline.stop()
-            self.btn_broadcast_cam.setProperty("active", "false")
-            self.btn_broadcast_cam.setText("Broadcast Camera")
-            self._s_camera.set_value("OFF")
-            self._s_camera.reset_color()
-            self._s_broadcast.set_value("IDLE")
-            self._s_broadcast.reset_color()
+            self._stop_video()
         else:
             # Start camera broadcasting
             if self.pipeline.load_camera(0):
-                if self.broadcaster:
-                    self.broadcaster._mode = "camera"
-                    self.broadcaster._source = 0
                 self.btn_broadcast_cam.setProperty("active", "true")
                 self.btn_broadcast_cam.setText("Stop Broadcasting")
-                self._s_camera.set_value("CAM 0")
+                cam_label = "SIM CAM" if getattr(self.pipeline, "_simulated_camera", False) else "CAM 0"
+                self._s_camera.set_value(cam_label)
                 self._s_camera.set_color("#10B981")
                 self._s_broadcast.set_value("LIVE")
                 self._s_broadcast.set_color("#10B981")
+        self.btn_broadcast_cam.style().unpolish(self.btn_broadcast_cam)
+        self.btn_broadcast_cam.style().polish(self.btn_broadcast_cam)
+
+    def _stop_video(self):
+        """Stop any playing video or camera broadcast and clear canvas to default state."""
+        self.pipeline.stop_video()
+        if self.broadcaster:
+            self.broadcaster.stop()
+
+        self.canvas.clear_frame()
+
+        # Reset button states
+        self.btn_load_video.setProperty("active", "false")
+        self.btn_load_video.setText("Upload Video")
+        self.btn_load_video.style().unpolish(self.btn_load_video)
+        self.btn_load_video.style().polish(self.btn_load_video)
+
+        self.btn_broadcast_cam.setProperty("active", "false")
+        self.btn_broadcast_cam.setText("Broadcast Camera")
+        self.btn_broadcast_cam.style().unpolish(self.btn_broadcast_cam)
+        self.btn_broadcast_cam.style().polish(self.btn_broadcast_cam)
+
+        # Reset status rows
+        self._s_camera.set_value("OFF")
+        self._s_camera.reset_color()
+        self._s_broadcast.set_value("IDLE")
+        self._s_broadcast.reset_color()
+        self._s_recording.set_value("OFF")
+        self._s_recording.reset_color()
+        self._s_objects.set_value("0")
+        self._s_objects.reset_color()
+        self._s_confidence.set_value("--")
+        self._s_confidence.reset_color()
+
+        self.meta_label.setText("NO ACTIVE STREAM")
+        self.frame_lbl.setText("FRAME 0000000")
+        self.status_label.setText("Video stopped - Ready")
+        self.message_center.add_message("Video stream stopped")
         self.btn_broadcast_cam.style().unpolish(self.btn_broadcast_cam)
         self.btn_broadcast_cam.style().polish(self.btn_broadcast_cam)
 
@@ -1036,7 +1256,10 @@ class LiveVideoScreen(QWidget):
 
     def _toggle_vitals(self):
         self._vitals_enabled = not self._vitals_enabled
-        self.pipeline.set_vitals_overlay(self._vitals_enabled)
+        if hasattr(self, 'vitals_hud'):
+            self.vitals_hud.setVisible(self._vitals_enabled)
+            if self._vitals_enabled:
+                self.vitals_hud.raise_()
         self.btn_vitals.setProperty(
             "active", "true" if self._vitals_enabled else "false"
         )
@@ -1045,6 +1268,18 @@ class LiveVideoScreen(QWidget):
         )
         self.btn_vitals.style().unpolish(self.btn_vitals)
         self.btn_vitals.style().polish(self.btn_vitals)
+
+    def set_vitals_model(self, model):
+        """Connect the Live Video HUD to the authoritative PatientVitalsModel."""
+        self._vitals_model = model
+        if hasattr(self, 'vitals_hud'):
+            model.vitals_updated.connect(self.vitals_hud.update_vitals)
+            self.vitals_hud.update_vitals(model.get_display_data())
+
+    def update_vitals(self, data: dict):
+        """Forward authoritative vitals to the HUD."""
+        if hasattr(self, 'vitals_hud'):
+            self.vitals_hud.update_vitals(data)
 
     def _toggle_pause(self):
         self._paused = not self._paused

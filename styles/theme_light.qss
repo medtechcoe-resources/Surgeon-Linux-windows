@@ -488,7 +488,7 @@ QPushButton#EStop {
     letter-spacing: 0.5px;
     padding: 0px 12px;
     min-height: 44px;
-    min-width: 160px;
+    min-width: 220px;
 }
 QPushButton#EStop:hover {
     background-color: #DC2626;

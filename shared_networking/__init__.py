@@ -6,8 +6,6 @@
 from shared_networking.config import (
     BROKER_HOST, BROKER_PORT, HEARTBEAT_INTERVAL_S,
     RECONNECT_INTERVAL_S,
-    # Legacy constants kept for reference — considered deprecated
-    ENCRYPTION_KEY_PATH, CREDENTIALS_PATH,
     APP_VERSION, SYSTEM_NAME,
     DATABASE_PATH, CERTS_DIR,
     VITALS_PUBLISH_INTERVAL_S, TELEMETRY_PUBLISH_INTERVAL_S,

@@ -245,19 +245,29 @@ class TLSManager:
 
     # ─── Public: SSL Contexts ─────────────────────────────────────
 
-    def create_server_context(self) -> ssl.SSLContext:
-        """Create a strict TLS 1.3 server (broker) SSL context.
+    def create_server_context(self, server_device: str = "broker") -> ssl.SSLContext:
+        """Create a strict TLS 1.3 server (broker or video receiver) SSL context.
 
-        - Uses broker certificate signed by the Aether Local CA.
+        - Uses certificate signed by the Aether Local CA.
         - Requires and verifies client certificates (mTLS).
         - Minimum TLS 1.3.
         - Certificate verification is NEVER disabled.
 
         Raises RuntimeError if certificates are missing.
         """
-        if not self.broker_cert_exists():
-            raise RuntimeError(
-                "Broker certificate missing — run provisioning first.")
+        if server_device == "broker":
+            if not self.broker_cert_exists():
+                raise RuntimeError(
+                    "Broker certificate missing — run provisioning first.")
+            cert_path = self._broker_cert_path
+            key_path = self._broker_key_path
+        else:
+            if not self.device_cert_exists(server_device):
+                raise RuntimeError(
+                    f"Server cert missing for {server_device} — run provisioning first.")
+            cert_path = self.device_cert_path(server_device)
+            key_path = self.device_key_path(server_device)
+
         if not self.ca_exists():
             raise RuntimeError(
                 "Aether CA missing — run provisioning first.")
@@ -265,16 +275,16 @@ class TLSManager:
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         ctx.minimum_version = ssl.TLSVersion.TLSv1_3
         ctx.load_cert_chain(
-            certfile=self._broker_cert_path,
-            keyfile=self._broker_key_path,
+            certfile=cert_path,
+            keyfile=key_path,
         )
         # Require and verify client certificates (mTLS)
         ctx.verify_mode = ssl.CERT_REQUIRED
         ctx.load_verify_locations(cafile=self._ca_cert_path)
         # Warn if key file permissions are too permissive
-        self.check_key_permissions(self._broker_key_path)
+        self.check_key_permissions(key_path)
         self.check_key_permissions(self._ca_key_path)
-        log.debug("[TLS] Server context created (mTLS, TLS 1.3)")
+        log.debug(f"[TLS] Server context created for {server_device} (mTLS, TLS 1.3)")
         return ctx
 
     def create_client_context(self, device_id: str) -> ssl.SSLContext:
@@ -396,12 +406,9 @@ class TLSManager:
 
     @staticmethod
     def check_key_permissions(path: str):
-        """Warn if a key file is readable by group or world.
-
-        On POSIX systems this detects overly permissive key files.
-        On Windows, file mode bits are limited — this logs at DEBUG level
-        if the stat check succeeds with mode != 0o600.
-        """
+        """Warn if a key file is readable by group or world on POSIX systems."""
+        if os.name == 'nt':
+            return  # Windows uses ACLs, POSIX mode bits do not apply
         try:
             mode = os.stat(path).st_mode & 0o777
             if mode & 0o077:  # Any group or world permission set

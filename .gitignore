@@ -36,11 +36,11 @@ aether.log.*
 *.swp
 *.swo
 
-# ─── Tool Outputs & Reports ──────────────────────────────────────
-vulture_report.txt
-*.report.txt
-
 # ─── OS ──────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
 
+# ─── Legacy patterns from original .gitignore ────────────────────
+shared_networking/__pycache__/
+Observer-Screen/__pycache__/
+Observer-Screen/ui/__pycache__/

@@ -10,11 +10,10 @@ Wired to ConnectionManager for live stats and AuthManager for password changes.
 """
 from datetime import datetime
 
-from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
-                             QLabel, QFrame, QPushButton, QComboBox, QSlider,
-                             QScrollArea, QLineEdit, QTextEdit, QMessageBox)
+from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout,
+                             QLabel, QFrame, QPushButton, QComboBox,
+                             QScrollArea, QLineEdit, QTextEdit)
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QFont
 from widgets.card import PanelFrame
 from theme_manager import ThemeManager
 from shared_networking.config import APP_VERSION, SYSTEM_NAME
@@ -242,7 +241,7 @@ class SettingsScreen(QWidget):
 
         # Algorithm
         self._enc_algo_lbl = _value_label(
-            "Fernet (AES-128-CBC + HMAC)", color="#6B7B8D")
+            "mTLS (TLS 1.3 / AES-256-GCM)", color="#6B7B8D")
         panel.add_layout(_field_row("Algorithm", self._enc_algo_lbl))
 
         # Current User

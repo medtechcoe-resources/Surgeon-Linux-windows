@@ -98,6 +98,7 @@ CTRL_HANDSHAKE   = "_handshake"
 CTRL_CLIENT_LIST = "_client_list"
 CTRL_CLIENT_UPDATE = "_client_update"
 CTRL_AUTH_REJECT = "_auth_reject"    # New: broker sends on auth failure
+CTRL_LOGOUT      = "_logout"         # Explicit client logout
 
 
 def create_message(topic: str, source: str, payload: dict) -> dict:
@@ -108,6 +109,11 @@ def create_message(topic: str, source: str, payload: dict) -> dict:
         "timestamp": datetime.now().isoformat(),
         "payload":   payload,
     }
+
+
+def create_logout(source: str, session_id: str = "") -> dict:
+    """Create an explicit logout control message."""
+    return create_message(CTRL_LOGOUT, source, {"session_id": session_id})
 
 
 def create_heartbeat(source: str) -> dict:

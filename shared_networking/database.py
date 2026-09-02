@@ -411,12 +411,17 @@ class AetherDatabase:
         ]
         for role, topic, can_pub, can_sub in acls:
             conn.execute(
-                "INSERT OR IGNORE INTO topic_acls "
-                "(role, topic, can_publish, can_subscribe) VALUES (?,?,?,?)",
+                """
+                INSERT INTO topic_acls (role, topic, can_publish, can_subscribe)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(role, topic) DO UPDATE SET
+                    can_publish = excluded.can_publish,
+                    can_subscribe = excluded.can_subscribe
+                """,
                 (role, topic, can_pub, can_sub),
             )
         conn.commit()
-        log.debug("[DB] Roles and ACLs seeded")
+        log.debug("[DB] Roles and ACLs reconciled")
 
     # ─── User Management ──────────────────────────────────────────
 

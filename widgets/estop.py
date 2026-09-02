@@ -17,7 +17,7 @@ class EmergencyStopButton(QPushButton):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("EStop")
-        self.setFixedSize(180, 44)
+        self.setFixedSize(220, 44)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.clicked.connect(self._confirm)
         self.setText("")   # Text rendered by paintEvent
@@ -72,7 +72,7 @@ class EmergencyStopButton(QPushButton):
         font = QFont("Inter", 12, QFont.Weight.ExtraBold)
         font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 1.2)
         p.setFont(font)
-        text_rect = self.rect().adjusted(38, 0, -4, 0)
+        text_rect = self.rect().adjusted(40, 0, -8, 0)
         p.drawText(text_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
                    "EMERGENCY STOP")
 

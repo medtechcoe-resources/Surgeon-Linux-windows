@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aether-surgical-console"
+version = "4.2.0"
+description = "Aether Surgical Console — Offline Local-Network Medical Robotic Workstation System"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "PyQt6>=6.7.0,<=6.8.1",
+    "opencv-python>=4.8.0.76,<=4.10.0.84",
+    "numpy>=1.24.0,<=1.26.4",
+    "ultralytics>=8.1.0,<=8.3.0",
+    "cryptography>=42.0.0,<=44.0.0",
+    "bcrypt>=4.1.0,<=4.2.1",
+    "psutil>=5.9.0,<=6.1.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0,<=9.1.1",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]

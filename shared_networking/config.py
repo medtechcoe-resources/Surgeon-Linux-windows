@@ -17,6 +17,10 @@ SYSTEM_NAME = "Aether Surgical Console"
 BROKER_HOST = "127.0.0.1"
 BROKER_PORT = 5000
 
+# ─── Dedicated TCP Video Stream (Port 5001) ──────────────────────
+VIDEO_HOST = "127.0.0.1"
+VIDEO_PORT = 5001
+
 # ─── Security: Database ──────────────────────────────────────────
 # SQLite database lives in the project's data/ directory.
 # data/ is in .gitignore — never committed to source control.
@@ -27,14 +31,6 @@ DATABASE_PATH = os.path.join(_DATA_DIR, "aether.db")
 # All certificates and keys live in data/certs/.
 # Never committed to source control (.gitignore covers data/).
 CERTS_DIR = os.path.join(_DATA_DIR, "certs")
-
-# ─── Legacy paths (kept for migration reference — NOT used by code) ─
-# The following constants are retained so any existing code that
-# imports them does not break with an ImportError during migration.
-# They should be considered deprecated and removed once all callers
-# have been updated.
-ENCRYPTION_KEY_PATH = os.path.join(_THIS_DIR, "aether.key")     # DEPRECATED
-CREDENTIALS_PATH    = os.path.join(_THIS_DIR, "credentials.json")  # DEPRECATED
 
 # ─── Heartbeat ───────────────────────────────────────────────────
 HEARTBEAT_INTERVAL_S = 2          # Send heartbeat every 2 seconds

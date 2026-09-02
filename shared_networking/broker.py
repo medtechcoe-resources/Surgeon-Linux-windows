@@ -36,7 +36,7 @@ from shared_networking.protocol import (
     encode_message, decode_header, decode_payload, create_message,
     CTRL_SUBSCRIBE, CTRL_UNSUBSCRIBE, CTRL_HEARTBEAT,
     CTRL_HANDSHAKE, CTRL_CLIENT_LIST, CTRL_CLIENT_UPDATE,
-    CTRL_AUTH_REJECT,
+    CTRL_AUTH_REJECT, CTRL_LOGOUT,
     get_message_class, get_class_limit,
 )
 from shared_networking.database import AetherDatabase
@@ -65,6 +65,7 @@ class ClientInfo:
         self.conn = conn
         self.addr = addr
         self.name = f"{addr[0]}:{addr[1]}"
+        self.send_lock = threading.Lock()
         self.subscriptions: set = set()
         self.publish_topics: list = []
         self.last_heartbeat = time.time()
@@ -79,6 +80,17 @@ class ClientInfo:
         self.device_id = ""
         self.device_type = ""
         self.authenticated = False
+
+    def send_bytes(self, data: bytes) -> bool:
+        """Send data over the socket safely using this client's send lock."""
+        with self.send_lock:
+            try:
+                self.conn.sendall(data)
+                self.packets_sent += 1
+                return True
+            except Exception as e:
+                log.debug(f"Send failed to '{self.name}': {e}")
+                return False
 
     def to_dict(self) -> dict:
         return {
@@ -331,6 +343,8 @@ class PubSubBroker:
                     client.last_heartbeat = time.time()
                 elif topic == CTRL_CLIENT_LIST:
                     self._handle_client_list_request(client)
+                elif topic == CTRL_LOGOUT:
+                    self._handle_logout(client, message)
                 else:
                     # Data message — RBAC check then route to subscribers
                     self._handle_publish(client, message, topic)
@@ -341,6 +355,16 @@ class PubSubBroker:
                 break
 
         # Client disconnected
+        self._remove_client(client)
+
+    def _handle_logout(self, client: ClientInfo, message: dict):
+        """Handle explicit client logout: invalidate session in database and disconnect."""
+        session_id = message.get("payload", {}).get("session_id", "") or client.session_id
+        if session_id:
+            self._db.invalidate_session(session_id)
+            log.info(f"User logged out: {client.username} (session={session_id[:8]}...)")
+            self._db.audit("USER_LOGOUT", username=client.username, device_id=client.device_id)
+            client.session_id = ""
         self._remove_client(client)
 
     # ─── Handshake & Authentication ───────────────────────────────
@@ -476,22 +500,24 @@ class PubSubBroker:
 
     def _route_message(self, sender: ClientInfo, message: dict,
                        topic: str):
-        """Route a permitted message to all subscribers of the topic."""
+        """Route a permitted message to all subscribers of the topic.
+
+        Snapshots subscriber clients under lock, then transmits outside
+        the global broker lock using each client's individual send lock.
+        """
         data = encode_message(message)
 
-        subscribers_count = 0
         with self._lock:
-            for fd, client in list(self._clients.items()):
-                if client is sender:
-                    continue
-                if topic in client.subscriptions:
-                    try:
-                        client.conn.sendall(data)
-                        client.packets_sent += 1
-                        subscribers_count += 1
-                    except Exception as e:
-                        log.debug(f"Send failed to '{client.name}' on topic '{topic}': {e}")
-                        # Dead client will be cleaned up by the heartbeat monitor
+            targets = [
+                client for client in self._clients.values()
+                if client is not sender and topic in client.subscriptions
+            ]
+
+        subscribers_count = 0
+        for client in targets:
+            if client.send_bytes(data):
+                subscribers_count += 1
+
         log.debug(
             f"Routed '{topic}' from '{sender.name}' "
             f"to {subscribers_count} subscribers")
@@ -562,23 +588,23 @@ class PubSubBroker:
                 details="client-list request before authentication")
             return
 
-        clients_data = []
         with self._lock:
-            for fd, c in self._clients.items():
-                clients_data.append(c.to_dict())
+            clients_data = [c.to_dict() for c in self._clients.values()]
 
         response = create_message(CTRL_CLIENT_LIST, "broker", {
             "clients": clients_data,
         })
-        try:
-            client.conn.sendall(encode_message(response))
-        except Exception as e:
-            log.debug(f"Send failed (client-list) to '{client.name}': {e}")
+        client.send_bytes(encode_message(response))
 
     # ─── Client Management ────────────────────────────────────────
 
     def _remove_client(self, client: ClientInfo):
-        """Remove a disconnected or rejected client."""
+        """Remove a disconnected or rejected client.
+
+        Note: Temporary TCP disconnect does NOT invalidate the user's
+        authentication session in SQLite. Only explicit logout (_logout),
+        session expiry, or admin revocation invalidates a session.
+        """
         with self._lock:
             fd = None
             for f, c in self._clients.items():
@@ -596,10 +622,6 @@ class PubSubBroker:
         log.info(f"Client disconnected: {client.name} "
                  f"(user={client.username}, device={client.device_id})")
         print(f"  [-] Client disconnected: {client.name}")
-
-        # Invalidate session (only for authenticated human operator sessions)
-        if client.session_id:
-            self._db.invalidate_session(client.session_id)
 
         # Only audit DEVICE_DISCONNECTED for clients that completed handshake.
         # Pre-auth rejections are already audited at DEVICE_AUTH_FAILED /
@@ -625,35 +647,29 @@ class PubSubBroker:
 
     def _broadcast_client_update(self):
         """Broadcast updated client list to all connected clients."""
-        clients_data = []
         with self._lock:
-            for fd, c in self._clients.items():
-                clients_data.append(c.to_dict())
+            clients_data = [c.to_dict() for c in self._clients.values()]
+            targets = list(self._clients.values())
 
         msg = create_message(CTRL_CLIENT_UPDATE, "broker", {
             "clients": clients_data,
         })
         data = encode_message(msg)
 
-        with self._lock:
-            for fd, client in list(self._clients.items()):
-                try:
-                    client.conn.sendall(data)
-                    client.packets_sent += 1
-                except Exception as e:
-                    log.debug(f"Send failed (client-update) to '{client.name}': {e}")
+        for client in targets:
+            client.send_bytes(data)
 
     def _broadcast_to_topic(self, topic: str, message: dict):
         """Send a message to all subscribers of a topic (no RBAC — broker-generated)."""
-        data = encode_message(message)
         with self._lock:
-            for fd, client in list(self._clients.items()):
-                if topic in client.subscriptions:
-                    try:
-                        client.conn.sendall(data)
-                        client.packets_sent += 1
-                    except Exception as e:
-                        log.debug(f"Send failed (broadcast '{topic}') to '{client.name}': {e}")
+            targets = [
+                client for client in self._clients.values()
+                if topic in client.subscriptions
+            ]
+
+        data = encode_message(message)
+        for client in targets:
+            client.send_bytes(data)
 
     # ─── Auth Reject ──────────────────────────────────────────────
 

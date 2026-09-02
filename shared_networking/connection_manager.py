@@ -28,9 +28,9 @@ from shared_networking.config import (
 from shared_networking.protocol import (
     encode_message_full, decode_header, decode_payload_full,
     create_heartbeat, create_handshake, create_subscribe,
-    create_unsubscribe, create_client_list_request,
+    create_unsubscribe, create_client_list_request, create_logout,
     CTRL_HEARTBEAT, CTRL_CLIENT_UPDATE, CTRL_CLIENT_LIST,
-    CTRL_AUTH_REJECT,
+    CTRL_AUTH_REJECT, CTRL_LOGOUT,
     is_control_message,
 )
 from shared_networking.tls import TLSManager
@@ -193,6 +193,11 @@ class ConnectionManager(QObject):
             self.log_message.emit("WARNING", "Already connected")
             return
 
+        # Ensure any existing receive thread is cleaned before creating a new one
+        if self._receive_thread and self._receive_thread.is_alive():
+            if threading.current_thread() != self._receive_thread:
+                self._receive_thread.join(timeout=1.0)
+
         if host:
             self._host = host
         if port:
@@ -215,6 +220,7 @@ class ConnectionManager(QObject):
             self._is_connected = True
             self._running = True
             self._connect_time = datetime.now()
+            self._reconnect_count = 0  # Reset backoff on successful connect
 
             # Send handshake with auth context
             # NOTE: broker never trusts client-provided role
@@ -261,16 +267,32 @@ class ConnectionManager(QObject):
                     pass
                 self._socket = None
 
-            # Schedule auto-reconnect
+            # Schedule auto-reconnect with exponential backoff
             if self._auto_reconnect_enabled:
                 self._schedule_reconnect()
 
     def disconnect_from_broker(self):
-        """Gracefully disconnect from the broker."""
+        """Gracefully disconnect from the broker without logging out."""
         self._auto_reconnect_enabled = False
         self._reconnect_timer.stop()
         self._do_disconnect()
         self.log_message.emit("INFO", "Disconnected from broker")
+
+    def logout(self):
+        """Explicitly log out the active session and disconnect."""
+        self._auto_reconnect_enabled = False
+        self._reconnect_timer.stop()
+        if self._is_connected and self._session_id:
+            try:
+                logout_msg = create_logout(self._client_name, self._session_id)
+                self._send_raw(logout_msg)
+            except Exception:
+                pass
+        self._session_id = ""
+        self._username = ""
+        self._role = ""
+        self._do_disconnect()
+        self.log_message.emit("INFO", "Logged out and disconnected")
 
     def restart_connection(self):
         """Disconnect and reconnect to the broker."""
@@ -484,8 +506,7 @@ class ConnectionManager(QObject):
         """Internal disconnect without logging or auto-reconnect logic.
 
         Sequences: set _running=False → close socket → join receive thread.
-        Joining the receive thread (with a timeout) ensures the thread
-        exits cleanly and does not become a zombie on shutdown.
+        Crucial: A thread must NEVER join itself.
         """
         was_connected = self._is_connected
         self._running = False
@@ -503,10 +524,10 @@ class ConnectionManager(QObject):
                 pass
             self._socket = None
 
-        # Join the receive thread so it does not linger after disconnect.
-        # Use a timeout to avoid blocking the caller indefinitely if the
-        # thread is stuck in a kernel call that doesn't respond to socket close.
-        if self._receive_thread and self._receive_thread.is_alive():
+        # Join the receive thread only if called from an external thread (e.g. GUI).
+        # NEVER join if the current executing thread IS the receive thread itself.
+        cur_thread = threading.current_thread()
+        if self._receive_thread and self._receive_thread is not cur_thread and self._receive_thread.is_alive():
             self._receive_thread.join(timeout=3.0)
             if self._receive_thread.is_alive():
                 self._log_warning("Receive thread did not exit cleanly after disconnect")
@@ -527,19 +548,31 @@ class ConnectionManager(QObject):
         if self._auto_reconnect_enabled:
             self._schedule_reconnect()
 
+    def _get_reconnect_delay(self) -> float:
+        """Return exponential backoff delay based on reconnect count."""
+        backoffs = [0.5, 1.0, 2.0, 4.0, 8.0, 10.0]
+        idx = min(self._reconnect_count, len(backoffs) - 1)
+        return backoffs[idx]
+
     def _schedule_reconnect(self):
-        """Schedule an auto-reconnect attempt."""
+        """Schedule an auto-reconnect attempt with exponential backoff."""
+        if not self._auto_reconnect_enabled:
+            return
         if MAX_RECONNECT_ATTEMPTS > 0 and \
                 self._reconnect_count >= MAX_RECONNECT_ATTEMPTS:
             self.log_message.emit("ERROR",
                                   "Max reconnect attempts reached")
             return
+        delay = self._get_reconnect_delay()
+        self._reconnect_timer.setInterval(int(delay * 1000))
         self.log_message.emit("INFO",
-                              f"Reconnecting in {RECONNECT_INTERVAL_S}s...")
+                              f"Reconnecting in {delay:.1f}s (attempt #{self._reconnect_count + 1})...")
         self._start_reconnect_sig.emit()
 
     def _auto_reconnect(self):
         """Auto-reconnect attempt."""
+        if not self._auto_reconnect_enabled:
+            return
         self._reconnect_count += 1
         self.log_message.emit("INFO",
                               f"Reconnect attempt #{self._reconnect_count}")
