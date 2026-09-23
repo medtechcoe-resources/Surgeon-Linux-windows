@@ -247,6 +247,75 @@ class _InfoSection(QFrame):
 #  MAIN PRE-OP PLANNING SCREEN
 # ═══════════════════════════════════════════════════════════════════
 
+class FullScreenMedicalImageViewer(QWidget):
+    """Dedicated full-screen medical image viewer."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+
+        self.setWindowTitle("Medical Image — Full Screen")
+        self.setStyleSheet("""
+            QWidget {
+                background: #000000;
+                color: #ffffff;
+            }
+            QPushButton {
+                background: #202020;
+                color: #ffffff;
+                border: 1px solid #555555;
+                border-radius: 5px;
+                padding: 8px 16px;
+                font-size: 14px;
+            }
+            QPushButton:hover {
+                background: #303030;
+            }
+        """)
+
+        self._image_label = QLabel()
+        self._image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._image_label.setStyleSheet("background: #000000;")
+
+        self._exit_button = QPushButton("EXIT")
+        self._exit_button.setFixedSize(90, 42)
+        self._exit_button.clicked.connect(self.close)
+
+        top_bar = QHBoxLayout()
+        top_bar.setContentsMargins(16, 16, 16, 8)
+        top_bar.addStretch()
+        top_bar.addWidget(self._exit_button)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addLayout(top_bar)
+        layout.addWidget(self._image_label, 1)
+
+        self._pixmap = QPixmap()
+
+    def set_pixmap(self, pixmap: QPixmap):
+        self._pixmap = pixmap
+        self._refresh()
+
+    def _refresh(self):
+        if self._pixmap.isNull():
+            self._image_label.clear()
+            return
+
+        available = self._image_label.size()
+
+        scaled = self._pixmap.scaled(
+            available,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+
+        self._image_label.setPixmap(scaled)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._refresh()
+
+
 class PreopPlanningScreen(QWidget):
 
     def __init__(self, parent=None):
@@ -427,6 +496,13 @@ class PreopPlanningScreen(QWidget):
         ctrl_row.addWidget(btn_zoom_in)
         ctrl_row.addWidget(btn_zoom_out)
         ctrl_row.addWidget(btn_fit)
+
+        self._fullscreen_btn = QPushButton("FULL SCREEN")
+        self._fullscreen_btn.setProperty("class", "ViewerControl")
+        self._fullscreen_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._fullscreen_btn.clicked.connect(self._open_fullscreen_image)
+        ctrl_row.addWidget(self._fullscreen_btn)
+
         ctrl_row.addStretch()
 
         self._zoom_label = QLabel("1.0×")
@@ -577,6 +653,28 @@ class PreopPlanningScreen(QWidget):
 
     def _active_viewer(self) -> MedicalImageViewer:
         return self._mri_viewer if self._active_modality == "MRI" else self._ct_viewer
+
+    def _open_fullscreen_image(self):
+        """Open the currently selected MRI/CT image in a dedicated full-screen window."""
+        viewer = self._active_viewer()
+
+        if not viewer.has_image():
+            return
+
+        if not hasattr(self, "_fullscreen_viewer") or self._fullscreen_viewer is None:
+            self._fullscreen_viewer = FullScreenMedicalImageViewer()
+            self._fullscreen_viewer.setWindowFlag(
+                Qt.WindowType.Window,
+                True
+            )
+
+        if viewer._pixmap is None or viewer._pixmap.isNull():
+            return
+
+        self._fullscreen_viewer.set_pixmap(viewer._pixmap)
+        self._fullscreen_viewer.showFullScreen()
+        self._fullscreen_viewer.raise_()
+        self._fullscreen_viewer.activateWindow()
 
     def _zoom_in(self):
         v = self._active_viewer()

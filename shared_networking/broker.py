@@ -76,6 +76,7 @@ class ClientInfo:
         # Auth context (populated during handshake — all from DB, never client)
         self.username = ""
         self.role = ""          # Always DB-authoritative, never client-provided
+        self.hospital_id = None # Derived from session, never from client
         self.session_id = ""
         self.device_id = ""
         self.device_type = ""
@@ -101,6 +102,7 @@ class ClientInfo:
             "connected_since": self.connect_time.isoformat(),
             "username": self.username,
             "role": self.role,
+            "hospital_id": self.hospital_id,
             "device_id": self.device_id,
             "authenticated": self.authenticated,
         }
@@ -412,7 +414,7 @@ class PubSubBroker:
             # The broker-verified device_id from the mTLS cert is passed so
             # the DB can enforce session/device binding (recommended, not a
             # blocker — sessions with NULL device_id are accepted for compat).
-            valid, db_username, db_role = self._db.validate_session(
+            valid, db_username, db_role, db_hospital_id = self._db.validate_session(
                 client_session_id, device_id=client.device_id)
             if not valid:
                 log.warning(
@@ -427,19 +429,21 @@ class PubSubBroker:
                 self._remove_client(client)
                 return
 
-            # Role is ALWAYS from the DB — never the client-provided value
+            # Role and hospital_id are ALWAYS from the DB — never client-provided
             client.username = db_username
-            client.role = db_role   # authoritative
+            client.role = db_role           # authoritative
+            client.hospital_id = db_hospital_id  # derived from session, never client
             client.session_id = client_session_id
             client.authenticated = True
             log.info(
                 f"Authenticated: {client.name} "
-                f"(user={db_username}, role={db_role})")
+                f"(user={db_username}, role={db_role}, "
+                f"hospital_id={db_hospital_id})")
             self._db.audit(
                 "HANDSHAKE_SUCCESS",
                 username=db_username,
                 device_id=client.device_id,
-                details=f"role={db_role}")
+                details=f"role={db_role} hospital_id={db_hospital_id}")
         else:
             # No credentials — reject (fail closed)
             log.warning(

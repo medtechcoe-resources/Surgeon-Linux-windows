@@ -1,0 +1,2900 @@
+"""
+Live Video Tab — Redesigned for 3440×1440 ultrawide.
+Layout: Left panel 18% | Center video 52% | Right panel 30% (split into upper/lower)
+
+Left panel:
+  - Detection Summary (6 info rows)
+  - Instrument Controls (4 sliders)
+  - Pipeline Controls (Load Video, YOLO, Vitals Overlay)
+
+Center: Endoscopic video feed with zoom + floating pause/play
+
+Right panel upper: Compact action cards + Detection metric summary cards
+Right panel lower: Foot pedal controls (flat, no emojis) + Message center
+"""
+import math
+import os
+import sys
+from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
+                             QFrame, QPushButton, QSlider, QSizePolicy,
+                             QFileDialog, QScrollArea, QSpacerItem,
+                             QGridLayout, QMessageBox, QDialog)
+from PyQt6.QtCore import Qt, QTimer, QPointF, QRectF, pyqtSignal
+from PyQt6.QtGui import (QPainter, QColor, QRadialGradient, QPen, QFont,
+                          QPixmap, QImage, QPolygonF, QTransform)
+from widgets.card import MetricCard, PanelFrame
+from theme_manager import ThemeManager
+from yolo_pipeline import YoloPipeline
+from recording.session_recorder import (
+    SessionRecorder, STATE_IDLE, STATE_RECORDING, STATE_FINALIZING,
+    STATE_EXPORTED, STATE_ERROR,
+)
+from widgets.patient_sidebar import PatientSidebar
+from input.joystick_controller import JoystickController
+
+
+INSTRUMENT_COLORS = {1: "#0095FF", 2: "#10B981", 3: "#8B5CF6", 4: "#F59E0B"}
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  DETECTION INFO ROW
+# ═══════════════════════════════════════════════════════════════════
+
+class _DetectRow(QWidget):
+    """Single label + value row for the Detection Summary panel."""
+
+    def __init__(self, label: str, value: str = "--", parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 3, 0, 3)
+        lay.setSpacing(8)
+
+        self._lbl = QLabel(label.upper())
+        self._lbl.setObjectName("DetectRowLabel")
+        self._lbl.setMinimumWidth(120)
+
+        self._val = QLabel(value)
+        self._val.setObjectName("DetectRowValue")
+        self._val.setAlignment(Qt.AlignmentFlag.AlignRight)
+
+        lay.addWidget(self._lbl)
+        lay.addStretch()
+        lay.addWidget(self._val)
+
+    def set_value(self, v: str):
+        self._val.setText(v)
+
+    def set_color(self, hex_color: str):
+        self._val.setStyleSheet(
+            f"color:{hex_color}; font-size:14px; font-weight:700; "
+            f"font-family:'JetBrains Mono','Consolas',monospace;"
+        )
+
+    def reset_color(self):
+        self._val.setStyleSheet("")
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  INSTRUMENT SLIDER ROW
+# ═══════════════════════════════════════════════════════════════════
+
+class _SliderRow(QWidget):
+    """Label + QSlider + live value display."""
+
+    def __init__(self, label: str, min_val: int, max_val: int, default: int = 0,
+                 unit: str = "\u00B0", parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self._unit = unit
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 2, 0, 2)
+        lay.setSpacing(2)
+
+        header = QHBoxLayout()
+        lbl = QLabel(label)
+        lbl.setObjectName("SliderLabel")
+        self._val_lbl = QLabel(f"{default}{unit}")
+        self._val_lbl.setObjectName("SliderValue")
+        self._val_lbl.setAlignment(Qt.AlignmentFlag.AlignRight)
+        header.addWidget(lbl)
+        header.addStretch()
+        header.addWidget(self._val_lbl)
+        lay.addLayout(header)
+
+        self.slider = QSlider(Qt.Orientation.Horizontal)
+        self.slider.setRange(min_val, max_val)
+        self.slider.setValue(default)
+        self.slider.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.slider.valueChanged.connect(self._on_change)
+        lay.addWidget(self.slider)
+
+    def _on_change(self, v: int):
+        self._val_lbl.setText(f"{v}{self._unit}")
+
+    def set_enabled(self, enabled: bool):
+        self.slider.setEnabled(enabled)
+
+    def reset(self):
+        self.slider.setValue(0)
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  COMPACT INSTRUMENT CARD (Right Panel)
+# ═══════════════════════════════════════════════════════════════════
+
+class _InstrumentCard(QFrame):
+    def __init__(self, number, name, arm, stat_label="", stat_val="", parent=None):
+        super().__init__(parent)
+        self.setObjectName("Card")
+        color = INSTRUMENT_COLORS.get(number, "#0095FF")
+
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(14, 10, 14, 10)
+        lay.setSpacing(10)
+
+        badge = QLabel(str(number))
+        badge.setFixedSize(24, 24)
+        badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        badge.setStyleSheet(
+            f"background-color:{color}; color:#0D1117; border-radius:12px; "
+            f"font-size:12px; font-weight:800;"
+        )
+        lay.addWidget(badge)
+
+        text_box = QVBoxLayout()
+        text_box.setSpacing(2)
+        n = QLabel(name)
+        n.setStyleSheet(
+            "color:#F5F7FA; font-size:12px; font-weight:700;"
+        )
+        n.setWordWrap(True)
+        a = QLabel(arm)
+        a.setStyleSheet(
+            f"color:{color}; font-size:10px; font-weight:700; letter-spacing:0.5px;"
+        )
+        text_box.addWidget(n)
+        text_box.addWidget(a)
+        lay.addLayout(text_box, 1)
+
+        if stat_label:
+            stat = QVBoxLayout()
+            stat.setSpacing(2)
+            sl = QLabel(stat_label)
+            sl.setObjectName("DetectRowLabel")
+            sv = QLabel(stat_val)
+            sv.setStyleSheet(
+                f"color:{color}; font-size:13px; font-weight:700; "
+                f"font-family:'JetBrains Mono','Consolas',monospace;"
+            )
+            stat.addWidget(sl)
+            stat.addWidget(sv)
+            lay.addLayout(stat)
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  ROBOTIC ARM DIAGRAM
+# ═══════════════════════════════════════════════════════════════════
+
+class _ArmDiagram(QFrame):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("Card")
+        self.setFixedHeight(140)
+        tm = ThemeManager.instance()
+        tm.theme_changed.connect(lambda _: self.update())
+
+    def paintEvent(self, event):
+        tm = ThemeManager.instance()
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = self.width(), self.height()
+        cx, cy = w / 2, h / 2
+
+        # Console body
+        p.setBrush(QColor(tm.color("bg_header")))
+        p.setPen(QPen(QColor(tm.color("border_heavy")), 2))
+        p.drawRoundedRect(int(cx - 18), int(cy - 40), 36, 80, 8, 8)
+
+        colors = ["#0095FF", "#10B981", "#8B5CF6", "#F59E0B"]
+        positions = [
+            (cx - 70, cy - 25),
+            (cx + 44, cy - 25),
+            (cx - 70, cy + 10),
+            (cx + 44, cy + 10),
+        ]
+        for i, ((ax, ay), color) in enumerate(zip(positions, colors)):
+            arm_cx = cx - 18 if ax < cx else cx + 18
+            arm_cy = ay + 12
+            p.setPen(QPen(QColor(color), 2.5, Qt.PenStyle.SolidLine,
+                          Qt.PenCapStyle.RoundCap))
+            p.drawLine(int(arm_cx), int(arm_cy), int(ax + 12), int(arm_cy))
+            p.setBrush(QColor(tm.color("bg_card")))
+            p.setPen(QPen(QColor(color), 2))
+            p.drawEllipse(int(ax), int(ay), 24, 24)
+            p.setPen(QColor(color))
+            f = QFont("Inter", 10, QFont.Weight.Bold)
+            p.setFont(f)
+            p.drawText(int(ax), int(ay), 24, 24,
+                       Qt.AlignmentFlag.AlignCenter, str(i + 1))
+        p.end()
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  FULLSCREEN LIVE VIDEO VIEWER
+# ═══════════════════════════════════════════════════════════════════
+
+class _FullscreenVideoViewer(QWidget):
+    """Fullscreen viewer for one already-rendered live video feed."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        self.setStyleSheet("background-color: #000000;")
+
+        self._pixmap = None
+        self._title = ""
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        self.canvas = _FeedCanvas()
+        self.canvas.setMinimumSize(0, 0)
+        self.canvas.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Expanding
+        )
+        self.canvas.setStyleSheet("background-color: #000000;")
+        layout.addWidget(self.canvas, 1)
+
+        self.exit_button = QPushButton("EXIT FULLSCREEN")
+        self.exit_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.exit_button.setFixedHeight(42)
+        self.exit_button.clicked.connect(self.close)
+        self.exit_button.setStyleSheet("""
+            QPushButton {
+                background-color: #1C2333;
+                color: #FFFFFF;
+                border: 1px solid #4A5568;
+                border-radius: 4px;
+                padding: 6px 18px;
+                font-size: 12px;
+                font-weight: 700;
+            }
+            QPushButton:hover {
+                background-color: #2D3748;
+            }
+        """)
+
+        layout.addWidget(self.exit_button)
+
+    def set_frame(self, qimage):
+        """Update fullscreen viewer with an already-rendered frame."""
+        if qimage is None or qimage.isNull():
+            return
+        self.canvas.set_frame(qimage)
+
+    def set_pixmap(self, pixmap):
+        """Display an existing rendered pixmap without processing it."""
+        if pixmap is None or pixmap.isNull():
+            return
+        self.canvas._pixmap = QPixmap(pixmap)
+        self.canvas.update()
+
+    def show_feed(self, source_canvas, title):
+        """Show the current frame and viewport state from the selected canvas."""
+        self._title = title
+
+        if source_canvas is not None:
+            if source_canvas._pixmap:
+                self.canvas._pixmap = QPixmap(source_canvas._pixmap)
+
+            # Keep fullscreen viewport synchronized with the source view.
+            self.canvas._zoom = source_canvas._zoom
+            self.canvas._pan_offset = QPointF(source_canvas._pan_offset)
+            self.canvas._rotation = source_canvas._rotation
+            self.canvas._clamp_pan()
+            self.canvas.update()
+
+        self.showFullScreen()
+        self.raise_()
+        self.activateWindow()
+
+    def keyPressEvent(self, event):
+        if event.key() in (
+            Qt.Key.Key_Escape,
+            Qt.Key.Key_F11,
+        ):
+            self.close()
+            return
+        super().keyPressEvent(event)
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  VIDEO FEED CANVAS (with zoom & pan)
+# ═══════════════════════════════════════════════════════════════════
+
+class _FeedCanvas(QFrame):
+    def __init__(self):
+        super().__init__()
+        self.setMinimumSize(640, 360)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self._pixmap = None
+        self._zoom = 1.0
+        self._pan_offset = QPointF(0, 0)
+        self._rotation = 0.0
+        self._drag_start = None
+        self._drag_offset_start = QPointF(0, 0)
+        self.mode = "robot"
+        self.setMouseTracking(True)
+        tm = ThemeManager.instance()
+        tm.theme_changed.connect(lambda _: self.update())
+
+    def set_frame(self, qimage):
+        self._pixmap = QPixmap.fromImage(qimage)
+        self.update()
+
+    def clear_frame(self):
+        self._pixmap = None
+        self.update()
+
+    def set_zoom(self, zoom):
+        self._zoom = max(1.0, min(3.0, zoom))
+        # Clamp pan offset when zoom changes
+        self._clamp_pan()
+        self.update()
+
+    def set_rotation(self, rotation):
+        """Set virtual video rotation in degrees."""
+        self._rotation = max(-90.0, min(90.0, rotation))
+        self.update()
+
+    def set_virtual_pan(self, x, y):
+        """Set virtual viewport pan from normalized joystick values."""
+        if self._zoom <= 1.0:
+            self._pan_offset = QPointF(0, 0)
+            self.update()
+            return
+
+        w, h = self.width(), self.height()
+
+        max_x = (self._zoom - 1.0) * w / (2.0 * self._zoom)
+        max_y = (self._zoom - 1.0) * h / (2.0 * self._zoom)
+
+        self._pan_offset = QPointF(
+            max_x * max(-1.0, min(1.0, x)),
+            max_y * max(-1.0, min(1.0, y)),
+        )
+
+        self.update()
+
+    def _clamp_pan(self):
+        if self._zoom <= 1.0:
+            self._pan_offset = QPointF(0, 0)
+            return
+        w, h = self.width(), self.height()
+        max_x = (self._zoom - 1.0) * w / (2.0 * self._zoom)
+        max_y = (self._zoom - 1.0) * h / (2.0 * self._zoom)
+        px = max(-max_x, min(max_x, self._pan_offset.x()))
+        py = max(-max_y, min(max_y, self._pan_offset.y()))
+        self._pan_offset = QPointF(px, py)
+
+    def wheelEvent(self, event):
+        delta = event.angleDelta().y()
+        if delta > 0:
+            self._zoom = min(3.0, self._zoom + 0.15)
+        else:
+            self._zoom = max(1.0, self._zoom - 0.15)
+        self._clamp_pan()
+        self.update()
+        # Propagate zoom to parent
+        parent = self.parent()
+        while parent:
+            if hasattr(parent, '_sync_zoom_from_canvas'):
+                parent._sync_zoom_from_canvas(self._zoom)
+                break
+            parent = parent.parent()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and self._zoom > 1.0:
+            self._drag_start = event.position()
+            self._drag_offset_start = QPointF(self._pan_offset)
+
+    def mouseMoveEvent(self, event):
+        if self._drag_start is not None:
+            delta = event.position() - self._drag_start
+            self._pan_offset = QPointF(
+                self._drag_offset_start.x() + delta.x() / self._zoom,
+                self._drag_offset_start.y() + delta.y() / self._zoom,
+            )
+            self._clamp_pan()
+            self.update()
+
+    def mouseReleaseEvent(self, event):
+        self._drag_start = None
+
+    def paintEvent(self, event):
+        tm = ThemeManager.instance()
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        w, h = self.width(), self.height()
+
+        if self._pixmap and not self._pixmap.isNull():
+            pw, ph = self._pixmap.width(), self._pixmap.height()
+            canvas_ar = w / max(h, 1)
+            pix_ar = pw / max(ph, 1)
+
+            if pix_ar > canvas_ar:
+                src_h = ph / self._zoom
+                src_w = (ph * canvas_ar) / self._zoom
+            else:
+                src_w = pw / self._zoom
+                src_h = (pw / canvas_ar) / self._zoom
+
+            src_x = (pw - src_w) / 2.0 - (self._pan_offset.x() * (pw / max(w, 1)))
+            src_y = (ph - src_h) / 2.0 - (self._pan_offset.y() * (ph / max(h, 1)))
+            src_x = max(0.0, min(pw - src_w, src_x))
+            src_y = max(0.0, min(ph - src_h, src_y))
+
+            src_rect = QRectF(src_x, src_y, src_w, src_h)
+            target_rect = QRectF(0.0, 0.0, float(w), float(h))
+
+            # Apply virtual camera rotation around the display center.
+            if abs(self._rotation) > 0.01:
+                p.save()
+                p.translate(w / 2.0, h / 2.0)
+                p.rotate(self._rotation)
+                p.translate(-w / 2.0, -h / 2.0)
+
+            p.drawPixmap(target_rect, self._pixmap, src_rect)
+
+            if abs(self._rotation) > 0.01:
+                p.restore()
+        else:
+            if tm.is_dark():
+                grad = QRadialGradient(w / 2, h / 2, max(w, h) * 0.7)
+                grad.setColorAt(0.0, QColor(50, 18, 18))
+                grad.setColorAt(0.7, QColor(22, 8, 8))
+                grad.setColorAt(1.0, QColor(10, 5, 5))
+            else:
+                grad = QRadialGradient(w / 2, h / 2, max(w, h) * 0.7)
+                grad.setColorAt(0.0, QColor(220, 230, 240))
+                grad.setColorAt(1.0, QColor(200, 215, 230))
+            p.fillRect(self.rect(), grad)
+
+            muted = QColor(tm.color("fg_muted"))
+            p.setPen(muted)
+            font = QFont("Inter", 16, QFont.Weight.DemiBold)
+            p.setFont(font)
+            text = "WAITING FOR BROADCAST" if self.mode == "surgeon" else "NO VIDEO SOURCE"
+            p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, text)
+
+        p.end()
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  PAINTED DOT
+# ═══════════════════════════════════════════════════════════════════
+
+class _PaintedDot(QWidget):
+    def __init__(self, color, parent=None):
+        super().__init__(parent)
+        self._color = QColor(color)
+        self.setFixedSize(10, 10)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setBrush(self._color)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawEllipse(1, 1, 8, 8)
+        p.end()
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  DETECTION METRIC SUMMARY CARD
+# ═══════════════════════════════════════════════════════════════════
+
+class _MetricSummary(QFrame):
+    def __init__(self, title, value="--", sub="", parent=None):
+        super().__init__(parent)
+        self.setObjectName("MetricSummaryCard")
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(12, 10, 12, 10)
+        lay.setSpacing(2)
+        t = QLabel(title.upper())
+        t.setObjectName("MetricSummaryTitle")
+        self._val = QLabel(value)
+        self._val.setObjectName("MetricSummaryValue")
+        self._sub = QLabel(sub)
+        self._sub.setObjectName("MetricSummarySub")
+        lay.addWidget(t)
+        lay.addWidget(self._val)
+        lay.addWidget(self._sub)
+
+    def set_value(self, v):
+        self._val.setText(str(v))
+
+    def set_sub(self, s):
+        self._sub.setText(s)
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  MESSAGE CENTER
+# ═══════════════════════════════════════════════════════════════════
+
+class _MessageCenter(QFrame):
+    message_added = pyqtSignal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("MessageCard")
+        self._messages = []
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(14, 12, 14, 12)
+        lay.setSpacing(6)
+
+        title = QLabel("MESSAGES")
+        title.setObjectName("MessageCardTitle")
+        lay.addWidget(title)
+
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        self._list_widget = QWidget()
+        self._list_layout = QVBoxLayout(self._list_widget)
+        self._list_layout.setContentsMargins(0, 0, 0, 0)
+        self._list_layout.setSpacing(4)
+        self._list_layout.addStretch()
+        self._scroll.setWidget(self._list_widget)
+        lay.addWidget(self._scroll, 1)
+
+        # Add default messages
+        defaults = [
+            "System initialized",
+            "EtherCAT master link established",
+            "Kinematics calibrated — RMS 0.42 mm",
+            "End-effector connected: Maryland",
+            "Robot ready",
+        ]
+        for msg in defaults:
+            self.add_message(msg)
+
+    def add_message(self, text):
+        self._messages.append(text)
+        self.message_added.emit(text)
+        # Un-highlight previous latest
+        count = self._list_layout.count()
+        for i in range(count):
+            item = self._list_layout.itemAt(i)
+            if item and item.widget():
+                item.widget().setObjectName("MessageItem")
+                for child in item.widget().findChildren(QLabel):
+                    child.setObjectName("MessageText")
+                item.widget().style().unpolish(item.widget())
+                item.widget().style().polish(item.widget())
+
+        # Create new message item
+        msg_frame = QFrame()
+        msg_frame.setObjectName("MessageItemLatest")
+        msg_lay = QHBoxLayout(msg_frame)
+        msg_lay.setContentsMargins(10, 6, 10, 6)
+        msg_lay.setSpacing(0)
+        msg_label = QLabel(text)
+        msg_label.setObjectName("MessageTextLatest")
+        msg_label.setWordWrap(True)
+        msg_lay.addWidget(msg_label)
+
+        # Insert before the stretch
+        self._list_layout.insertWidget(self._list_layout.count() - 1, msg_frame)
+
+        # Auto-scroll to bottom
+        QTimer.singleShot(50, lambda: self._scroll.verticalScrollBar().setValue(
+            self._scroll.verticalScrollBar().maximum()
+        ))
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  SECTION SEPARATOR
+# ═══════════════════════════════════════════════════════════════════
+
+def _section_label(text: str) -> QLabel:
+    lbl = QLabel(text)
+    lbl.setObjectName("SectionTitle")
+    return lbl
+
+
+def _divider() -> QFrame:
+    f = QFrame()
+    f.setObjectName("HLine")
+    f.setFrameShape(QFrame.Shape.HLine)
+    return f
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  PATIENT VITALS HUD OVERLAY (Floating Canvas Widget)
+# ═══════════════════════════════════════════════════════════════════
+
+class _VitalsHUD(QFrame):
+    """Compact translucent surgical overlay HUD floating over live video canvas."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("VitalsHUD")
+        self.setFixedSize(286, 62)
+        self.setStyleSheet("""
+            QFrame#VitalsHUD {
+                background-color: rgba(13, 17, 23, 0.72);
+                border: 1px solid rgba(255, 255, 255, 0.14);
+                border-radius: 6px;
+            }
+        """)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 6, 10, 6)
+        layout.setSpacing(4)
+
+        # Row 1: HR, SpO2, Status Badge
+        r1 = QHBoxLayout()
+        r1.setContentsMargins(0, 0, 0, 0)
+        r1.setSpacing(6)
+
+        lbl_hr = QLabel("♥ HR")
+        lbl_hr.setStyleSheet("color: #94A3B8; font-size: 10px; font-weight: 700; font-family: 'Inter', sans-serif;")
+        self.val_hr = QLabel("--")
+        self.val_hr.setStyleSheet("color: #10B981; font-size: 13px; font-weight: 700; font-family: 'JetBrains Mono', 'Consolas', monospace;")
+        unit_hr = QLabel("bpm")
+        unit_hr.setStyleSheet("color: #64748B; font-size: 9px; font-family: 'Inter', sans-serif;")
+
+        sep1 = QLabel("|")
+        sep1.setStyleSheet("color: rgba(255, 255, 255, 0.18); font-size: 10px;")
+
+        lbl_spo2 = QLabel("SpO₂")
+        lbl_spo2.setStyleSheet("color: #94A3B8; font-size: 10px; font-weight: 700; font-family: 'Inter', sans-serif;")
+        self.val_spo2 = QLabel("--")
+        self.val_spo2.setStyleSheet("color: #38BDF8; font-size: 13px; font-weight: 700; font-family: 'JetBrains Mono', 'Consolas', monospace;")
+        unit_spo2 = QLabel("%")
+        unit_spo2.setStyleSheet("color: #64748B; font-size: 9px; font-family: 'Inter', sans-serif;")
+
+        self.status_badge = QLabel("NO DATA")
+        self.status_badge.setStyleSheet("color: #94A3B8; font-size: 9px; font-weight: 700; padding: 1px 5px; border-radius: 3px; background: rgba(148, 163, 184, 0.16);")
+
+        r1.addWidget(lbl_hr)
+        r1.addWidget(self.val_hr)
+        r1.addWidget(unit_hr)
+        r1.addSpacing(2)
+        r1.addWidget(sep1)
+        r1.addSpacing(2)
+        r1.addWidget(lbl_spo2)
+        r1.addWidget(self.val_spo2)
+        r1.addWidget(unit_spo2)
+        r1.addStretch()
+        r1.addWidget(self.status_badge)
+        layout.addLayout(r1)
+
+        # Row 2: BP, Temp
+        r2 = QHBoxLayout()
+        r2.setContentsMargins(0, 0, 0, 0)
+        r2.setSpacing(6)
+
+        lbl_bp = QLabel("BP")
+        lbl_bp.setStyleSheet("color: #94A3B8; font-size: 10px; font-weight: 700; font-family: 'Inter', sans-serif;")
+        self.val_bp = QLabel("--")
+        self.val_bp.setStyleSheet("color: #F5F7FA; font-size: 13px; font-weight: 700; font-family: 'JetBrains Mono', 'Consolas', monospace;")
+        unit_bp = QLabel("mmHg")
+        unit_bp.setStyleSheet("color: #64748B; font-size: 9px; font-family: 'Inter', sans-serif;")
+
+        sep2 = QLabel("|")
+        sep2.setStyleSheet("color: rgba(255, 255, 255, 0.18); font-size: 10px;")
+
+        lbl_temp = QLabel("TEMP")
+        lbl_temp.setStyleSheet("color: #94A3B8; font-size: 10px; font-weight: 700; font-family: 'Inter', sans-serif;")
+        self.val_temp = QLabel("--")
+        self.val_temp.setStyleSheet("color: #F5F7FA; font-size: 13px; font-weight: 700; font-family: 'JetBrains Mono', 'Consolas', monospace;")
+        unit_temp = QLabel("°C")
+        unit_temp.setStyleSheet("color: #64748B; font-size: 9px; font-family: 'Inter', sans-serif;")
+
+        r2.addWidget(lbl_bp)
+        r2.addWidget(self.val_bp)
+        r2.addWidget(unit_bp)
+        r2.addSpacing(2)
+        r2.addWidget(sep2)
+        r2.addSpacing(2)
+        r2.addWidget(lbl_temp)
+        r2.addWidget(self.val_temp)
+        r2.addWidget(unit_temp)
+        r2.addStretch()
+        layout.addLayout(r2)
+
+    def update_vitals(self, data: dict):
+        if not isinstance(data, dict):
+            return
+        hr_str = data.get("hr", "--")
+        spo2_str = data.get("spo2", "--")
+        bp_str = data.get("bp", "--")
+        temp_str = data.get("temperature", "--")
+        status = data.get("status", "NO DATA")
+
+        self.val_hr.setText(str(hr_str))
+        self.val_spo2.setText(str(spo2_str))
+        self.val_bp.setText(str(bp_str))
+        self.val_temp.setText(str(temp_str))
+
+        status_styles = {
+            "LIVE": ("color: #10B981; background: rgba(16, 185, 129, 0.18);", "#10B981", "#38BDF8", "#F5F7FA", "#F5F7FA"),
+            "STALE": ("color: #F59E0B; background: rgba(245, 158, 11, 0.18);", "#F59E0B", "#F59E0B", "#F59E0B", "#F59E0B"),
+            "DISCONNECTED": ("color: #EF4444; background: rgba(239, 68, 68, 0.18);", "#94A3B8", "#94A3B8", "#94A3B8", "#94A3B8"),
+            "NO DATA": ("color: #94A3B8; background: rgba(148, 163, 184, 0.18);", "#94A3B8", "#94A3B8", "#94A3B8", "#94A3B8"),
+            "INVALID": ("color: #EF4444; background: rgba(239, 68, 68, 0.18);", "#94A3B8", "#94A3B8", "#94A3B8", "#94A3B8"),
+        }
+        badge_style, c_hr, c_spo2, c_bp, c_temp = status_styles.get(
+            status, ("color: #94A3B8; background: rgba(148, 163, 184, 0.18);", "#94A3B8", "#94A3B8", "#94A3B8", "#94A3B8")
+        )
+        self.status_badge.setText(status)
+        self.status_badge.setStyleSheet(f"font-size: 9px; font-weight: 700; padding: 1px 5px; border-radius: 3px; {badge_style}")
+
+        self.val_hr.setStyleSheet(f"color: {c_hr}; font-size: 13px; font-weight: 700; font-family: 'JetBrains Mono', 'Consolas', monospace;")
+        self.val_spo2.setStyleSheet(f"color: {c_spo2}; font-size: 13px; font-weight: 700; font-family: 'JetBrains Mono', 'Consolas', monospace;")
+        self.val_bp.setStyleSheet(f"color: {c_bp}; font-size: 13px; font-weight: 700; font-family: 'JetBrains Mono', 'Consolas', monospace;")
+        self.val_temp.setStyleSheet(f"color: {c_temp}; font-size: 13px; font-weight: 700; font-family: 'JetBrains Mono', 'Consolas', monospace;")
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  SESSION EXPORT DIALOG
+# ═══════════════════════════════════════════════════════════════════
+
+class _VitalSparkline(QWidget):
+    """Small live trend graph for one patient vital."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._values = []
+        self.setMinimumHeight(22)
+        self.setMaximumHeight(22)
+
+    def set_value(self, value):
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return
+
+        self._values.append(number)
+
+        # Keep the graph compact and recent.
+        self._values = self._values[-30:]
+        self.update()
+
+    def clear(self):
+        self._values.clear()
+        self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        w = max(1, self.width())
+        h = max(1, self.height())
+
+        # Baseline
+        p.setPen(QPen(QColor("#263244"), 1))
+        p.drawLine(0, h - 2, w, h - 2)
+
+        if len(self._values) < 2:
+            p.end()
+            return
+
+        low = min(self._values)
+        high = max(self._values)
+
+        if abs(high - low) < 0.001:
+            low -= 1.0
+            high += 1.0
+
+        points = []
+
+        for i, value in enumerate(self._values):
+            x = (
+                i * (w - 2) / max(len(self._values) - 1, 1)
+            ) + 1
+
+            normalized = (value - low) / (high - low)
+            y = (h - 3) - normalized * (h - 6)
+
+            points.append(QPointF(x, y))
+
+        pen = QPen(QColor("#38BDF8"), 1.5)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        p.setPen(pen)
+
+        for i in range(1, len(points)):
+            p.drawLine(points[i - 1], points[i])
+
+        p.end()
+
+
+class _CompactVitalCell(QFrame):
+    """Compact right-sidebar vital value with a small trend graph."""
+
+    def __init__(self, label, unit, parent=None):
+        super().__init__(parent)
+        self.setObjectName("Card")
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 6, 8, 5)
+        layout.setSpacing(1)
+
+        header = QHBoxLayout()
+        header.setSpacing(3)
+
+        self.label = QLabel(label)
+        self.label.setStyleSheet(
+            "font-size:10px; font-weight:700; color:#94A3B8;"
+        )
+        header.addWidget(self.label)
+
+        header.addStretch()
+
+        self.unit = QLabel(unit)
+        self.unit.setStyleSheet(
+            "font-size:8px; color:#64748B;"
+        )
+        header.addWidget(self.unit)
+
+        layout.addLayout(header)
+
+        self.value = QLabel("--")
+        self.value.setStyleSheet(
+            "font-size:17px; font-weight:700; color:#94A3B8;"
+        )
+        layout.addWidget(self.value)
+
+        self.graph = _VitalSparkline()
+        layout.addWidget(self.graph)
+
+
+class _CompactVitalsPanel(QFrame):
+    """Compact Patient Vitals panel for the Live Video right sidebar."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("Card")
+
+        self._cells = {
+            "HR": _CompactVitalCell("HR", "bpm"),
+            "SpO2": _CompactVitalCell("SpO₂", "%"),
+            "BP": _CompactVitalCell("BP", "mmHg"),
+            "Temp": _CompactVitalCell("TEMP", "°C"),
+        }
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(6)
+
+        header = QHBoxLayout()
+        header.setSpacing(6)
+
+        title = QLabel("PATIENT VITALS")
+        title.setStyleSheet(
+            "font-size:11px; font-weight:700; color:#D7DEE8;"
+        )
+        header.addWidget(title)
+        header.addStretch()
+
+        self.status = QLabel("NO DATA")
+        self.status.setStyleSheet(
+            "font-size:8px; font-weight:700; "
+            "color:#94A3B8; "
+            "background:rgba(148,163,184,0.12); "
+            "padding:2px 5px; border-radius:3px;"
+        )
+        header.addWidget(self.status)
+
+        layout.addLayout(header)
+
+        grid = QGridLayout()
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setSpacing(5)
+
+        grid.addWidget(self._cells["HR"], 0, 0)
+        grid.addWidget(self._cells["SpO2"], 0, 1)
+        grid.addWidget(self._cells["BP"], 1, 0)
+        grid.addWidget(self._cells["Temp"], 1, 1)
+
+        layout.addLayout(grid)
+
+    def update_vitals(self, data):
+        if not isinstance(data, dict):
+            return
+
+        hr = data.get("hr", "--")
+        spo2 = data.get("spo2", "--")
+        bp = data.get("bp", "--")
+        temp = data.get("temperature", "--")
+        status = str(data.get("status", "NO DATA")).upper()
+
+        values = {
+            "HR": hr,
+            "SpO2": spo2,
+            "BP": bp,
+            "Temp": temp,
+        }
+
+        for key, value in values.items():
+            cell = self._cells[key]
+            cell.value.setText(str(value))
+
+        # Trend values.
+        try:
+            self._cells["HR"].graph.set_value(hr)
+        except Exception:
+            pass
+
+        try:
+            self._cells["SpO2"].graph.set_value(spo2)
+        except Exception:
+            pass
+
+        # For BP, graph systolic pressure.
+        try:
+            systolic = str(bp).split("/")[0]
+            self._cells["BP"].graph.set_value(systolic)
+        except Exception:
+            pass
+
+        try:
+            self._cells["Temp"].graph.set_value(temp)
+        except Exception:
+            pass
+
+        if status == "LIVE":
+            self.status.setText("LIVE")
+            self.status.setStyleSheet(
+                "font-size:8px; font-weight:700; "
+                "color:#10B981; "
+                "background:rgba(16,185,129,0.12); "
+                "padding:2px 5px; border-radius:3px;"
+            )
+        elif status == "STALE":
+            self.status.setText("STALE")
+            self.status.setStyleSheet(
+                "font-size:8px; font-weight:700; "
+                "color:#F59E0B; "
+                "background:rgba(245,158,11,0.12); "
+                "padding:2px 5px; border-radius:3px;"
+            )
+        elif status == "DISCONNECTED":
+            self.status.setText("OFFLINE")
+            self.status.setStyleSheet(
+                "font-size:8px; font-weight:700; "
+                "color:#EF4444; "
+                "background:rgba(239,68,68,0.12); "
+                "padding:2px 5px; border-radius:3px;"
+            )
+        else:
+            self.status.setText("NO DATA")
+            self.status.setStyleSheet(
+                "font-size:8px; font-weight:700; "
+                "color:#94A3B8; "
+                "background:rgba(148,163,184,0.12); "
+                "padding:2px 5px; border-radius:3px;"
+            )
+
+
+class SessionExportDialog(QDialog):
+    """Clean clinical dialog displayed upon session export completion."""
+
+    def __init__(self, session_id: str, mp4_path: str, pdf_path: str, duration: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Session Export Complete")
+        self.setFixedWidth(540)
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #0F172A;
+                color: #F8FAFC;
+                border: 1px solid #334155;
+                border-radius: 8px;
+            }
+            QLabel {
+                color: #F8FAFC;
+            }
+            QPushButton {
+                background-color: #1E293B;
+                color: #F8FAFC;
+                border: 1px solid #475569;
+                border-radius: 6px;
+                padding: 8px 14px;
+                font-size: 12px;
+                font-weight: 700;
+                min-height: 32px;
+            }
+            QPushButton:hover {
+                background-color: #334155;
+            }
+            QPushButton:disabled {
+                background-color: #0F172A;
+                color: #64748B;
+                border-color: #1E293B;
+            }
+        """)
+
+        mp4_ok = bool(mp4_path and os.path.isfile(mp4_path) and os.path.getsize(mp4_path) > 0)
+        pdf_ok = bool(pdf_path and os.path.isfile(pdf_path) and os.path.getsize(pdf_path) > 0)
+        is_full_success = mp4_ok and pdf_ok
+
+        lay = QVBoxLayout(self)
+        lay.setSpacing(14)
+        lay.setContentsMargins(22, 20, 22, 20)
+
+        # Header Title
+        title_text = "SESSION EXPORT COMPLETE" if is_full_success else "SESSION EXPORT (PARTIAL)"
+        title_color = "#10B981" if is_full_success else "#F59E0B"
+        title_lbl = QLabel(title_text)
+        title_lbl.setStyleSheet(f"font-size: 16px; font-weight: 800; color: {title_color};")
+        lay.addWidget(title_lbl)
+
+        if not is_full_success:
+            err_box = QLabel("PDF generated successfully, but video export failed or contains no recorded frames.")
+            err_box.setWordWrap(True)
+            err_box.setStyleSheet("color: #EF4444; font-size: 12px; font-weight: 600;")
+            lay.addWidget(err_box)
+
+        # Details Grid Frame
+        grid_frame = QFrame()
+        grid_frame.setStyleSheet("background-color: #1E293B; border-radius: 6px; border: 1px solid #334155;")
+        glay = QGridLayout(grid_frame)
+        glay.setContentsMargins(12, 10, 12, 10)
+        glay.setHorizontalSpacing(14)
+        glay.setVerticalSpacing(8)
+
+        def _add_row(r, label, val):
+            l = QLabel(label)
+            l.setStyleSheet("color: #94A3B8; font-size: 11px; font-weight: 700;")
+            v = QLabel(val)
+            v.setStyleSheet("color: #F8FAFC; font-size: 12px; font-weight: 600;")
+            v.setWordWrap(True)
+            glay.addWidget(l, r, 0)
+            glay.addWidget(v, r, 1)
+
+        _add_row(0, "SESSION ID:", session_id or "N/A")
+        _add_row(1, "DURATION:", duration or "00:00:00")
+        _add_row(2, "VIDEO FILE:", os.path.basename(mp4_path) if mp4_ok else "No video recorded")
+        _add_row(3, "PDF REPORT:", os.path.basename(pdf_path) if pdf_ok else "PDF missing")
+        lay.addWidget(grid_frame)
+
+        # Action Buttons
+        btn_lay = QHBoxLayout()
+        btn_lay.setSpacing(8)
+
+        btn_open_video = QPushButton("OPEN VIDEO")
+        btn_open_video.setEnabled(mp4_ok)
+        btn_open_video.clicked.connect(lambda: self._open_file(mp4_path))
+        btn_lay.addWidget(btn_open_video)
+
+        btn_open_pdf = QPushButton("OPEN PDF")
+        btn_open_pdf.setEnabled(pdf_ok)
+        btn_open_pdf.clicked.connect(lambda: self._open_file(pdf_path))
+        btn_lay.addWidget(btn_open_pdf)
+
+        btn_open_folder = QPushButton("OPEN FOLDER")
+        folder = os.path.dirname(pdf_path) if pdf_path else os.path.dirname(mp4_path)
+        btn_open_folder.setEnabled(bool(folder and os.path.isdir(folder)))
+        btn_open_folder.clicked.connect(lambda: self._open_folder(folder))
+        btn_lay.addWidget(btn_open_folder)
+
+        btn_close = QPushButton("CLOSE")
+        btn_close.clicked.connect(self.accept)
+        btn_lay.addWidget(btn_close)
+
+        lay.addLayout(btn_lay)
+
+    def _open_file(self, file_path: str):
+        if not file_path or not os.path.exists(file_path):
+            return
+        import subprocess
+        if sys.platform == "win32":
+            os.startfile(file_path)
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", file_path])
+        else:
+            subprocess.Popen(["xdg-open", file_path])
+
+    def _open_folder(self, folder_path: str):
+        if not folder_path or not os.path.exists(folder_path):
+            return
+        import subprocess
+        if sys.platform == "win32":
+            os.startfile(folder_path)
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", folder_path])
+        else:
+            subprocess.Popen(["xdg-open", folder_path])
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  MAIN LIVE VIDEO SCREEN
+# ═══════════════════════════════════════════════════════════════════
+
+class LiveVideoScreen(QWidget):
+    ZOOM_MIN = 1.0
+    ZOOM_MAX = 3.0
+    ZOOM_STEP = 0.2
+
+    def __init__(self, mode="surgeon", parent=None):
+        super().__init__(parent)
+        self.mode = mode
+        self.broadcaster = None
+        self.zoom = self.ZOOM_MIN
+
+        # Thrustmaster T.Flight Stick X
+        # Axis 3 is used only for Live Video zoom.
+        self.joystick = JoystickController()
+        self.joystick.initialize()
+
+        self._joystick_buttons = {
+            9: False,   # Physical button 10 -> Broadcast Camera
+            10: False,  # Physical button 11 -> YOLO ON/OFF
+            11: False,  # Physical button 12 -> Stop Video
+        }
+
+        self._joystick_timer = QTimer(self)
+        self._joystick_timer.setInterval(50)
+        self._joystick_timer.timeout.connect(self._update_joystick_controls)
+        self._joystick_timer.start()
+
+        # YOLO Pipeline
+        self.pipeline = YoloPipeline(self)
+        self.pipeline.frame_ready.connect(self._on_frame)
+        self.pipeline.raw_frame_ready.connect(self._on_raw_frame)
+        self.pipeline.stats_updated.connect(self._on_stats)
+        self.pipeline.status_changed.connect(self._on_status)
+
+        self._yolo_enabled = False
+        self._vitals_enabled = False
+        self._paused = False
+        self._frame_count = 0
+        self._detect_time_ms = 0.0
+
+        # Session Metadata & Continuous Recorder
+        self._session_id = ""
+        self._username = ""
+        self._role = ""
+        self._session_active = False
+        self.recorder = SessionRecorder(self)
+        self.recorder.state_changed.connect(self._on_recorder_state)
+        self.recorder.export_started.connect(self._on_export_started)
+        self.recorder.export_finished.connect(self._on_export_finished)
+        self.recorder.export_failed.connect(self._on_export_failed)
+
+        # Independent copy of the global Patient Sidebar.
+        # This instance is used only by Live Video.
+        self.live_video_patient_sidebar = PatientSidebar()
+        self.live_video_patient_sidebar.setSizePolicy(
+            QSizePolicy.Policy.Fixed,
+            QSizePolicy.Policy.Expanding
+        )
+
+        outer = QHBoxLayout(self)
+        outer.setContentsMargins(0, 10, 0, 0)
+        outer.setSpacing(10)
+
+        # ══════════════════════════════════════════
+        #  LEFT PANEL (~18%)
+        # ══════════════════════════════════════════
+        left_scroll = QScrollArea()
+        left_scroll.setObjectName("LiveVideoLeftPanel")
+        left_scroll.setWidgetResizable(True)
+        left_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        left_scroll.setMinimumWidth(0)
+        left_scroll.setMaximumWidth(16777215)
+
+        left_widget = QWidget()
+        left = QVBoxLayout(left_widget)
+        left.setContentsMargins(0, 0, 6, 0)
+        left.setSpacing(6)
+
+        # ─ Detection Summary ─
+        left.addWidget(_section_label("DETECTION SUMMARY"))
+
+        detect_card = QFrame()
+        detect_card.setObjectName("Card")
+        detect_layout = QVBoxLayout(detect_card)
+        detect_layout.setContentsMargins(12, 10, 12, 10)
+        detect_layout.setSpacing(0)
+
+        self._d_name   = _DetectRow("Instrument Name", "--")
+        self._d_conf   = _DetectRow("Confidence", "--")
+        self._d_tid    = _DetectRow("Tracking ID", "--")
+        self._d_status = _DetectRow("Detection Status", "IDLE")
+        self._d_frames = _DetectRow("Frame Count", "0")
+        self._d_time   = _DetectRow("Detection Time", "--")
+
+        for row in (self._d_name, self._d_conf, self._d_tid,
+                    self._d_status, self._d_frames, self._d_time):
+            detect_layout.addWidget(row)
+            detect_layout.addWidget(_divider())
+
+        left.addWidget(detect_card)
+        left.addSpacing(4)
+
+        # ─ Detection Metrics ─
+        metrics_grid = QGridLayout()
+        metrics_grid.setSpacing(6)
+
+        self._m_objects = _MetricSummary("Objects", "0", "detected")
+        self._m_conf    = _MetricSummary("Confidence", "--", "mean %")
+        self._m_fps     = _MetricSummary("Frame Rate", "0", "FPS")
+        self._m_infer   = _MetricSummary("Inference", "--", "ms")
+
+        metrics_grid.addWidget(self._m_objects, 0, 0)
+        metrics_grid.addWidget(self._m_conf, 0, 1)
+        metrics_grid.addWidget(self._m_fps, 1, 0)
+        metrics_grid.addWidget(self._m_infer, 1, 1)
+
+        left.addWidget(_section_label("DETECTION METRICS"))
+        left.addLayout(metrics_grid)
+
+        # YOLO Detection control remains the existing working button.
+        self.btn_yolo = QPushButton("YOLO Detection")
+        self.btn_yolo.setProperty("class", "ToggleButton")
+        self.btn_yolo.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_yolo.clicked.connect(self._toggle_yolo)
+        left.addWidget(self.btn_yolo)
+
+        # ─ Maryland Bipolar Controls ─
+        left.addWidget(_section_label("MARYLAND BIPOLAR CONTROLS"))
+
+        slider_card = QFrame()
+        slider_card.setObjectName("Card")
+        slider_layout = QVBoxLayout(slider_card)
+        slider_layout.setContentsMargins(12, 10, 12, 10)
+        slider_layout.setSpacing(4)
+
+        self._s_jaw   = _SliderRow("Jaw",   0,    100,   0, "\u00B0")
+        self._s_pitch = _SliderRow("Pitch", -45,  45,    0, "\u00B0")
+        self._s_yaw   = _SliderRow("Yaw",   -45,  45,    0, "\u00B0")
+        self._s_roll  = _SliderRow("Roll",  -180, 180,   0, "\u00B0")
+
+        for sr in (self._s_jaw, self._s_pitch, self._s_yaw, self._s_roll):
+            slider_layout.addWidget(sr)
+
+        left.addWidget(slider_card)
+        left.addSpacing(4)
+
+        # ─ Pipeline Controls ─
+        left.addWidget(_section_label("PIPELINE CONTROLS"))
+
+        self.btn_load_video = QPushButton("Upload Video")
+        self.btn_load_video.setProperty("class", "BroadcastButton")
+        self.btn_load_video.setProperty("active", "false")
+        self.btn_load_video.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_load_video.clicked.connect(self._load_video)
+        left.addWidget(self.btn_load_video)
+
+        self.btn_broadcast_cam = QPushButton("Broadcast Camera")
+        self.btn_broadcast_cam.setProperty("class", "BroadcastButton")
+        self.btn_broadcast_cam.setProperty("active", "false")
+        self.btn_broadcast_cam.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_broadcast_cam.clicked.connect(self._broadcast_camera)
+        left.addWidget(self.btn_broadcast_cam)
+
+        self.btn_stop_video = QPushButton("Stop Video")
+        self.btn_stop_video.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_stop_video.setStyleSheet("""
+            QPushButton {
+                background-color: #2D1A1E;
+                color: #EF4444;
+                border: 1px solid #7F1D1D;
+                border-radius: 6px;
+                padding: 8px 14px;
+                font-weight: 700;
+                font-size: 13px;
+            }
+            QPushButton:hover {
+                background-color: #7F1D1D;
+                color: #FFFFFF;
+                border: 1px solid #DC2626;
+            }
+            QPushButton:pressed {
+                background-color: #991B1B;
+                color: #FFFFFF;
+            }
+        """)
+        self.btn_stop_video.clicked.connect(self._stop_video)
+        left.addWidget(self.btn_stop_video)
+
+        self.btn_vitals = QPushButton("Vitals Overlay")
+        self.btn_vitals.setProperty("class", "ToggleButton")
+        self.btn_vitals.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_vitals.clicked.connect(self._toggle_vitals)
+        left.addWidget(self.btn_vitals)
+
+        # ─ Session Recording & Summary Export ─
+        left.addSpacing(6)
+        left.addWidget(_section_label("SESSION RECORDING"))
+
+        sess_btn_lay = QHBoxLayout()
+        sess_btn_lay.setSpacing(6)
+
+        self.btn_start_session = QPushButton("▶ START SESSION")
+        self.btn_start_session.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_start_session.setStyleSheet(self._STYLE_START_SESSION)
+        self.btn_start_session.clicked.connect(self.start_session)
+        sess_btn_lay.addWidget(self.btn_start_session)
+
+        self.btn_stop_session = QPushButton("■ STOP SESSION")
+        self.btn_stop_session.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_stop_session.setStyleSheet(self._STYLE_STOP_SESSION)
+        self.btn_stop_session.setEnabled(False)
+        self.btn_stop_session.clicked.connect(self.stop_session)
+        sess_btn_lay.addWidget(self.btn_stop_session)
+
+        left.addLayout(sess_btn_lay)
+
+        self.btn_record_session = QPushButton("● RECORD SESSION")
+        self.btn_record_session.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_record_session.setStyleSheet("""
+            QPushButton {
+                background-color: #1A2E26;
+                color: #10B981;
+                border: 1.5px solid #059669;
+                border-radius: 6px;
+                padding: 8px 14px;
+                font-weight: 700;
+                font-size: 13px;
+                min-height: 34px;
+            }
+            QPushButton:hover {
+                background-color: #059669;
+                color: #FFFFFF;
+            }
+            QPushButton:pressed {
+                background-color: #047857;
+                color: #FFFFFF;
+            }
+        """)
+        self.btn_record_session.clicked.connect(self._toggle_recording)
+        left.addWidget(self.btn_record_session)
+
+        self.btn_export_session = QPushButton("EXPORT SESSION")
+        self.btn_export_session.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_export_session.setStyleSheet("""
+            QPushButton {
+                background-color: #0F2D3D;
+                color: #00B4D8;
+                border: 1.5px solid #0077B6;
+                border-radius: 6px;
+                padding: 9px 14px;
+                font-weight: 700;
+                font-size: 13px;
+                min-height: 36px;
+            }
+            QPushButton:hover {
+                background-color: #0077B6;
+                color: #FFFFFF;
+                border-color: #00B4D8;
+            }
+            QPushButton:pressed {
+                background-color: #023E8A;
+                color: #FFFFFF;
+            }
+            QPushButton:disabled {
+                background-color: #1C2333;
+                border-color: #2D3748;
+                color: #4A5568;
+            }
+        """)
+        self.btn_export_session.clicked.connect(self._export_session)
+        left.addWidget(self.btn_export_session)
+
+        self.status_label = QLabel("Ready")
+        self.status_label.setObjectName("DetectRowLabel")
+        self.status_label.setWordWrap(True)
+        left.addWidget(self.status_label)
+
+        left.addSpacing(4)
+
+        # ─ Live Status Summary ─
+        left.addWidget(_section_label("SYSTEM STATUS"))
+
+        status_card = QFrame()
+        status_card.setObjectName("LiveStatusSection")
+        status_lay = QVBoxLayout(status_card)
+        status_lay.setContentsMargins(12, 10, 12, 10)
+        status_lay.setSpacing(0)
+
+        self._s_camera    = _DetectRow("Camera",    "OFF")
+        self._s_broadcast = _DetectRow("Broadcast",  "IDLE")
+        self._s_recording = _DetectRow("Recording",  "OFF")
+        self._s_yolo_st   = _DetectRow("YOLO",       "IDLE")
+        self._s_objects   = _DetectRow("Objects",    "0")
+        self._s_confidence= _DetectRow("Confidence", "--")
+
+        for row in (self._s_camera, self._s_broadcast,
+                    self._s_recording, self._s_yolo_st,
+                    self._s_objects, self._s_confidence):
+            status_lay.addWidget(row)
+            status_lay.addWidget(_divider())
+
+        left.addWidget(status_card)
+
+        left.addStretch()
+        left_scroll.setWidget(left_widget)
+        self.left_scroll = left_scroll
+
+        # Keep the local Live Video left panel visible.
+        # This is separate from the global Patient Sidebar.
+        self._legacy_left_scroll = left_scroll
+
+        # ══════════════════════════════════════════
+        #  CENTER PANEL (~52%) — Video Feed
+        # ══════════════════════════════════════════
+        center = QVBoxLayout()
+        center.setSpacing(0)
+        center.setContentsMargins(0, 0, 0, 0)
+
+        # Header bar
+        header_bar = QFrame()
+        header_bar.setObjectName("SectionHeaderBar")
+        hb_lay = QHBoxLayout(header_bar)
+        hb_lay.setContentsMargins(20, 10, 20, 10)
+        hb_lay.setSpacing(16)
+
+        feed_title = QLabel("ENDOSCOPIC FEED  \u00B7  CH-01")
+        feed_title.setObjectName("PanelTitle")
+        feed_title.setStyleSheet("font-size:16px;")
+
+        self.rec_dot = _PaintedDot("#EF4444")
+        self.rec_label = QLabel("REC")
+        self.rec_label.setStyleSheet(
+            "color:#EF4444; font-size:11px; font-weight:700;"
+        )
+        self.meta_label = QLabel("1920\u00D71080  \u00B7  H.265")
+        self.meta_label.setObjectName("DetectRowLabel")
+
+        hb_lay.addWidget(feed_title)
+        hb_lay.addStretch()
+        hb_lay.addWidget(self.rec_dot)
+        hb_lay.addSpacing(4)
+        hb_lay.addWidget(self.rec_label)
+        hb_lay.addSpacing(14)
+        self.btn_header_start = QPushButton("▶ START SESSION")
+        self.btn_header_start.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_header_start.setStyleSheet("""
+            QPushButton {
+                background-color: #064E3B;
+                color: #34D399;
+                border: 1px solid #059669;
+                border-radius: 4px;
+                padding: 4px 10px;
+                font-size: 11px;
+                font-weight: 700;
+            }
+            QPushButton:hover {
+                background-color: #059669;
+                color: #FFFFFF;
+            }
+            QPushButton:disabled {
+                background-color: #1C2333;
+                border-color: #2D3748;
+                color: #4A5568;
+            }
+        """)
+        self.btn_header_start.clicked.connect(self.start_session)
+        hb_lay.addWidget(self.btn_header_start)
+
+        self.btn_header_stop = QPushButton("■ STOP SESSION")
+        self.btn_header_stop.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_header_stop.setStyleSheet("""
+            QPushButton {
+                background-color: #450A0A;
+                color: #F87171;
+                border: 1px solid #DC2626;
+                border-radius: 4px;
+                padding: 4px 10px;
+                font-size: 11px;
+                font-weight: 700;
+            }
+            QPushButton:hover {
+                background-color: #DC2626;
+                color: #FFFFFF;
+            }
+            QPushButton:disabled {
+                background-color: #1C2333;
+                border-color: #2D3748;
+                color: #4A5568;
+            }
+        """)
+        self.btn_header_stop.clicked.connect(self.stop_session)
+        self.btn_header_stop.setEnabled(False)
+        hb_lay.addWidget(self.btn_header_stop)
+
+        hb_lay.addSpacing(6)
+        self.btn_header_export = QPushButton("EXPORT SESSION")
+        self.btn_header_export.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_header_export.setStyleSheet("""
+            QPushButton {
+                background-color: #0F2D3D;
+                color: #00B4D8;
+                border: 1px solid #0077B6;
+                border-radius: 4px;
+                padding: 4px 12px;
+                font-size: 11px;
+                font-weight: 700;
+            }
+            QPushButton:hover {
+                background-color: #0077B6;
+                color: #FFFFFF;
+            }
+            QPushButton:disabled {
+                background-color: #1C2333;
+                border-color: #2D3748;
+                color: #4A5568;
+            }
+        """)
+        self.btn_header_export.clicked.connect(self._export_session)
+        hb_lay.addWidget(self.btn_header_export)
+        hb_lay.addSpacing(16)
+        hb_lay.addWidget(self.meta_label)
+        center.addWidget(header_bar)
+
+        # Video canvas container (for floating overlay button)
+        self._canvas_container = QWidget()
+        self._canvas_container.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
+        container_lay = QVBoxLayout(self._canvas_container)
+        container_lay.setContentsMargins(0, 0, 0, 0)
+        container_lay.setSpacing(0)
+
+        # ==========================================================
+        # DUAL VIDEO VIEWS
+        # One physical camera source -> two displays.
+        #
+        # Assisted View = processed frame with YOLO overlays
+        # Original View = untouched raw camera frame
+        # ==========================================================
+
+        # Assisted View
+        self.canvas = _FeedCanvas()
+        self.canvas.mode = self.mode
+        self.canvas.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Expanding
+        )
+
+        assisted_frame = QFrame()
+        assisted_frame.setObjectName("Card")
+        assisted_layout = QVBoxLayout(assisted_frame)
+        assisted_layout.setContentsMargins(0, 0, 0, 0)
+        assisted_layout.setSpacing(0)
+
+        # Assisted View header with fullscreen control.
+        assisted_header = QHBoxLayout()
+        assisted_header.setContentsMargins(10, 0, 6, 0)
+        assisted_header.setSpacing(6)
+
+        assisted_title = QLabel("ASSISTED VIEW  ·  YOLO")
+        assisted_title.setMinimumHeight(28)
+        assisted_title.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+        assisted_title.setStyleSheet("font-weight:600;")
+
+        self.btn_fullscreen_assisted = QPushButton("⛶")
+        self.btn_fullscreen_assisted.setToolTip("Fullscreen Assisted View")
+        self.btn_fullscreen_assisted.setCursor(
+            Qt.CursorShape.PointingHandCursor
+        )
+        self.btn_fullscreen_assisted.setFixedSize(28, 24)
+        self.btn_fullscreen_assisted.setStyleSheet("""
+            QPushButton {
+                background: transparent;
+                color: #AAB4C3;
+                border: 1px solid #3A4556;
+                border-radius: 3px;
+                font-size: 15px;
+                font-weight: 700;
+            }
+            QPushButton:hover {
+                background: #1C2333;
+                color: #FFFFFF;
+                border-color: #00B4D8;
+            }
+        """)
+        self.btn_fullscreen_assisted.clicked.connect(
+            self._open_assisted_fullscreen
+        )
+
+        assisted_header.addWidget(assisted_title)
+        assisted_header.addStretch()
+        assisted_header.addWidget(self.btn_fullscreen_assisted)
+
+        assisted_layout.addLayout(assisted_header)
+        assisted_layout.addWidget(self.canvas, 1)
+
+        # Original View
+        self.original_canvas = _FeedCanvas()
+        self.original_canvas.mode = self.mode
+        self.original_canvas.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Expanding
+        )
+
+        original_frame = QFrame()
+        original_frame.setObjectName("Card")
+        original_layout = QVBoxLayout(original_frame)
+        original_layout.setContentsMargins(0, 0, 0, 0)
+        original_layout.setSpacing(0)
+
+        # Original View header with fullscreen control.
+        original_header = QHBoxLayout()
+        original_header.setContentsMargins(10, 0, 6, 0)
+        original_header.setSpacing(6)
+
+        original_title = QLabel("ORIGINAL VIEW  ·  CLEAN")
+        original_title.setMinimumHeight(28)
+        original_title.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+        original_title.setStyleSheet("font-weight:600;")
+
+        self.btn_fullscreen_original = QPushButton("⛶")
+        self.btn_fullscreen_original.setToolTip("Fullscreen Original View")
+        self.btn_fullscreen_original.setCursor(
+            Qt.CursorShape.PointingHandCursor
+        )
+        self.btn_fullscreen_original.setFixedSize(28, 24)
+        self.btn_fullscreen_original.setStyleSheet("""
+            QPushButton {
+                background: transparent;
+                color: #AAB4C3;
+                border: 1px solid #3A4556;
+                border-radius: 3px;
+                font-size: 15px;
+                font-weight: 700;
+            }
+            QPushButton:hover {
+                background: #1C2333;
+                color: #FFFFFF;
+                border-color: #00B4D8;
+            }
+        """)
+        self.btn_fullscreen_original.clicked.connect(
+            self._open_original_fullscreen
+        )
+
+        original_header.addWidget(original_title)
+        original_header.addStretch()
+        original_header.addWidget(self.btn_fullscreen_original)
+
+        original_layout.addLayout(original_header)
+        original_layout.addWidget(self.original_canvas, 1)
+
+        # Side-by-side video views.
+        # Both views use the same physical camera source.
+        dual_views = QHBoxLayout()
+        dual_views.setContentsMargins(0, 0, 0, 0)
+        dual_views.setSpacing(8)
+        dual_views.addWidget(assisted_frame, 1)
+        dual_views.addWidget(original_frame, 1)
+
+        container_lay.addLayout(dual_views, 1)
+
+        # Floating pause/play button
+        self.btn_pause = QPushButton("\u275A\u275A")
+        self.btn_pause.setObjectName("PauseOverlay")
+        self.btn_pause.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_pause.clicked.connect(self._toggle_pause)
+        self.btn_pause.setParent(self._canvas_container)
+        self.btn_pause.raise_()
+
+        # Floating Patient Vitals HUD overlay
+        self.vitals_hud = _VitalsHUD(parent=self._canvas_container)
+        self.vitals_hud.move(16, 16)
+        self.vitals_hud.raise_()
+        self.vitals_hud.setVisible(False)
+
+        center.addWidget(self._canvas_container, 1)
+
+        # ── Targeted Live Video Footer ───────────────────────────────
+        # Exact order:
+        # FOCUS | - | ZOOM SLIDER | VALUE | + | HOME |
+        # UPLOAD VIDEO | BROADCAST CAMERA | STOP
+
+        ctrl_bar = QHBoxLayout()
+        ctrl_bar.setContentsMargins(12, 8, 12, 8)
+        ctrl_bar.setSpacing(8)
+
+        # Focus
+        self.btn_focus = QPushButton("FOCUS")
+        self.btn_focus.setProperty("class", "GridButton")
+        self.btn_focus.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_focus.setFixedSize(68, 34)
+        ctrl_bar.addWidget(self.btn_focus)
+
+        # Zoom out
+        self.btn_zoom_out = QPushButton("\u2212")
+        self.btn_zoom_out.setProperty("class", "GridButton")
+        self.btn_zoom_out.setFixedSize(34, 34)
+        self.btn_zoom_out.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_zoom_out.clicked.connect(self._zoom_out)
+        ctrl_bar.addWidget(self.btn_zoom_out)
+
+        # Zoom slider
+        self.zoom_slider = QSlider(Qt.Orientation.Horizontal)
+        self.zoom_slider.setRange(10, 30)
+        self.zoom_slider.setValue(10)
+        self.zoom_slider.setFixedWidth(190)
+        self.zoom_slider.valueChanged.connect(self._on_zoom_slider)
+        ctrl_bar.addWidget(self.zoom_slider)
+
+        # Zoom value
+        self.zoom_value_lbl = QLabel("1.0\u00D7")
+        self.zoom_value_lbl.setObjectName("SliderValue")
+        self.zoom_value_lbl.setFixedWidth(42)
+        self.zoom_value_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        ctrl_bar.addWidget(self.zoom_value_lbl)
+
+        # Zoom in
+        self.btn_zoom_in = QPushButton("+")
+        self.btn_zoom_in.setProperty("class", "GridButton")
+        self.btn_zoom_in.setFixedSize(34, 34)
+        self.btn_zoom_in.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_zoom_in.clicked.connect(self._zoom_in)
+        ctrl_bar.addWidget(self.btn_zoom_in)
+
+        # Home / reset zoom
+        self.btn_home_cam = QPushButton("HOME")
+        self.btn_home_cam.setProperty("class", "GridButton")
+        self.btn_home_cam.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_home_cam.setFixedSize(68, 34)
+        self.btn_home_cam.clicked.connect(self._zoom_home)
+        ctrl_bar.addWidget(self.btn_home_cam)
+
+        # Existing operational controls are moved into the footer.
+        # Reuse the original widgets/callbacks, but normalize their
+        # appearance and size to match FOCUS / HOME.
+        self.btn_load_video.setText("UPLOAD VIDEO")
+        self.btn_load_video.setProperty("class", "GridButton")
+        self.btn_load_video.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_load_video.setFixedSize(120, 34)
+        ctrl_bar.addWidget(self.btn_load_video)
+
+        self.btn_broadcast_cam.setText("BROADCAST CAMERA")
+        self.btn_broadcast_cam.setProperty("class", "GridButton")
+        self.btn_broadcast_cam.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_broadcast_cam.setFixedSize(150, 34)
+        ctrl_bar.addWidget(self.btn_broadcast_cam)
+
+        self.btn_stop_video.setText("STOP")
+        self.btn_stop_video.setProperty("class", "GridButton")
+        self.btn_stop_video.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_stop_video.setFixedSize(70, 34)
+        ctrl_bar.addWidget(self.btn_stop_video)
+
+        center.addLayout(ctrl_bar)
+
+        # Bottom info bar
+        bottom_bar = QHBoxLayout()
+        bottom_bar.setContentsMargins(20, 0, 20, 10)
+        self.frame_lbl = QLabel("FRAME 0000000")
+        self.time_lbl = QLabel("T+ 00:00:00")
+        self.roi_lbl = QLabel("ZOOM 1.0\u00D7  \u00B7  ROI 100%")
+        for lbl in (self.frame_lbl, self.time_lbl, self.roi_lbl):
+            lbl.setObjectName("DetectRowLabel")
+            lbl.setStyleSheet(
+                "font-family:'JetBrains Mono','Consolas',monospace; font-size:11px;"
+            )
+            bottom_bar.addWidget(lbl)
+            bottom_bar.addStretch()
+        center.addLayout(bottom_bar)
+
+        center_widget = QWidget()
+        center_widget.setLayout(center)
+        center_widget.setObjectName("Card")
+
+        # Live Video layout:
+        # left 15% = Detection Summary / Metrics / YOLO / Controls
+        # center 70% = Assisted View / Original View
+        # right 15% = Patient Vitals / Instruments / Foot Pedals / Messages
+        left_scroll.setWidget(left_widget)
+        outer.addWidget(left_scroll, 15)
+        outer.addWidget(center_widget, 70)
+
+        # ══════════════════════════════════════════
+        #  RIGHT PANEL (~30%) — Split Upper/Lower
+        # ══════════════════════════════════════════
+        right_scroll = QScrollArea()
+        right_scroll.setObjectName("LiveVideoRightPanel")
+        right_scroll.setWidgetResizable(True)
+        right_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        right_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        # Target approximately 22% of the Live Video content width.
+        # This keeps the right panel visually substantial on the ultrawide display.
+        right_scroll.setMinimumWidth(0)
+        right_scroll.setMaximumWidth(16777215)
+        right_scroll.setSizePolicy(
+            QSizePolicy.Policy.Preferred,
+            QSizePolicy.Policy.Expanding
+        )
+
+        right_widget = QWidget()
+        right = QVBoxLayout(right_widget)
+        right.setContentsMargins(8, 0, 0, 0)
+        right.setSpacing(10)
+
+        # ── Right Panel 1: Patient Vitals ──
+        right.addWidget(_section_label("PATIENT MONITORING"))
+
+        if not hasattr(self, "right_vitals"):
+            self.right_vitals = _CompactVitalsPanel()
+
+        right.addWidget(self.right_vitals)
+
+        right.addWidget(_section_label("INSTRUMENTS"))
+
+        right.addWidget(_InstrumentCard(
+            1, "Maryland Bipolar Curved Scissors", "Arm 1", "Coag", "40 W"
+        ))
+        right.addWidget(_InstrumentCard(
+            2, "Monopolar Curved Scissors", "Arm 2", "Cut", "30 W"
+        ))
+        right.addWidget(_InstrumentCard(
+            3, "Prograsp Forceps", "Arm 3"
+        ))
+        right.addWidget(_InstrumentCard(
+            4, "Cadiere Forceps", "Arm 4"
+        ))
+
+        right.addWidget(_ArmDiagram())
+
+        # ── Right Panel 2: Foot Pedals + Messages ──
+        right.addWidget(_section_label("FOOT PEDAL CONTROLS"))
+
+        pedal_card = QFrame()
+        pedal_card.setObjectName("Card")
+        pc_lay = QVBoxLayout(pedal_card)
+        pc_lay.setContentsMargins(14, 12, 14, 12)
+        pc_lay.setSpacing(8)
+
+        self.btn_clutch = QPushButton("CLUTCH")
+        self.btn_clutch.setProperty("class", "FlatPedal")
+        self.btn_clutch.setProperty("active", "true")
+        self.btn_clutch.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_clutch.clicked.connect(lambda: self._toggle_action(self.btn_clutch))
+        pc_lay.addWidget(self.btn_clutch)
+
+        coag_cut = QHBoxLayout()
+        coag_cut.setSpacing(8)
+
+        self.btn_coag = QPushButton("COAG")
+        self.btn_coag.setProperty("class", "FlatPedalCoag")
+        self.btn_coag.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_coag.clicked.connect(lambda: self._toggle_action(self.btn_coag))
+
+        self.btn_cut = QPushButton("CUT")
+        self.btn_cut.setProperty("class", "FlatPedal")
+        self.btn_cut.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_cut.clicked.connect(lambda: self._toggle_action(self.btn_cut))
+
+        coag_cut.addWidget(self.btn_coag)
+        coag_cut.addWidget(self.btn_cut)
+        pc_lay.addLayout(coag_cut)
+
+        right.addWidget(pedal_card)
+
+        # ── Message Center ──
+        self.message_center = _MessageCenter()
+        self.message_center.setMinimumHeight(160)
+        self.message_center.message_added.connect(
+            lambda txt: self.recorder.record_message(txt, source="message_center")
+        )
+        right.addWidget(self.message_center, 1)
+
+        right_scroll.setWidget(right_widget)
+        self.right_scroll = right_scroll
+        # Give the Live Video right panel a responsive 18%-22% width.
+        outer.addWidget(right_scroll, 15)
+
+        # REC blink
+        self._rec_visible = True
+        self._rec_timer = QTimer(self)
+        self._rec_timer.timeout.connect(self._blink_rec)
+        self._rec_timer.start(800)
+
+    # ── Resize: reposition floating overlays ──────────────────────────
+
+    def set_live_video_vitals_model(self, model):
+        if hasattr(self, "live_video_patient_sidebar"):
+            self.live_video_patient_sidebar.set_vitals_model(model)
+
+    def set_live_video_system_status(self, component, state):
+        if hasattr(self, "live_video_patient_sidebar"):
+            self.live_video_patient_sidebar.set_system_status(component, state)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+
+        # Live Video LOCAL left panel.
+        # Keep the detection/YOLO controls visible at approximately 18%.
+        if hasattr(self, "left_scroll"):
+            left_width = max(260, int(self.width() * 0.18))
+            self.left_scroll.setFixedWidth(left_width)
+
+        # Live Video right panel.
+        # Keep Patient Vitals / Trends / Instruments / Pedals / Messages
+        # between 18% and 22% of the Live Video width.
+        if hasattr(self, "right_scroll"):
+            right_min = max(280, int(self.width() * 0.18))
+            right_max = max(right_min, int(self.width() * 0.22))
+
+            current_width = self.right_scroll.width()
+
+            if current_width < right_min:
+                self.right_scroll.setFixedWidth(right_min)
+            elif current_width > right_max:
+                self.right_scroll.setFixedWidth(right_max)
+
+        self._reposition_overlays()
+
+    def _reposition_overlays(self):
+        if hasattr(self, 'btn_pause') and hasattr(self, '_canvas_container'):
+            cw = self._canvas_container.width()
+            self.btn_pause.move(cw - 56, 12)
+        if hasattr(self, 'vitals_hud'):
+            self.vitals_hud.move(16, 16)
+
+    def _reposition_pause_btn(self):
+        self._reposition_overlays()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+
+        # Enable Thrustmaster Axis 3 polling only while Live Video is visible.
+        if hasattr(self, "_joystick_timer") and not self._joystick_timer.isActive():
+            self._joystick_timer.start()
+
+        QTimer.singleShot(50, self._reposition_overlays)
+
+    def hideEvent(self, event):
+        # Stop joystick polling when Live Video is not visible.
+        if hasattr(self, "_joystick_timer") and self._joystick_timer.isActive():
+            self._joystick_timer.stop()
+
+        super().hideEvent(event)
+
+    # ── Frame / Stats Callbacks ────────────────────────────────────────
+
+    def _on_raw_frame(self, raw_qimage):
+        """Display and broadcast the clean source frame."""
+
+        if not self._session_active or self._paused:
+            return
+
+        # Original View receives the untouched camera frame.
+        if hasattr(self, "original_canvas"):
+            self.original_canvas.set_frame(raw_qimage)
+
+        # Keep Original View fullscreen live when it is open.
+        viewer = getattr(self, "_original_fullscreen_viewer", None)
+        if viewer is not None and viewer.isVisible():
+            viewer.set_frame(raw_qimage)
+
+        # Preserve the existing broadcast path.
+        if self.broadcaster and self.mode == "robot":
+            self.broadcaster.broadcast_qimage(raw_qimage)
+
+    def _on_frame(self, qimage):
+        """Update local canvas with local overlays (YOLO boxes/vitals)."""
+        if self._paused:
+            return
+
+        # Assisted View receives the processed frame.
+        self.canvas.set_frame(qimage)
+
+        # Keep Assisted View fullscreen live when it is open.
+        viewer = getattr(self, "_assisted_fullscreen_viewer", None)
+        if viewer is not None and viewer.isVisible():
+            viewer.set_frame(qimage)
+
+        if hasattr(self, 'recorder'):
+            self.recorder.record_frame(qimage)
+        info = self.pipeline.get_video_info()
+        self._frame_count = info.get("current_frame", self._frame_count)
+        self.frame_lbl.setText(f"FRAME {self._frame_count:07d}")
+        if info.get("width", 0) > 0:
+            self.meta_label.setText(
+                f"{info['width']}\u00D7{info['height']}  \u00B7  H.265"
+            )
+
+    def update_frame(self, qimage):
+        """Called by Surgeon Console when a broadcast frame arrives over TCP 5001."""
+        print(
+            f"[LIVE_VIDEO DEBUG] session_active={self._session_active} "
+            f"paused={self._paused} "
+            f"frame_valid={qimage is not None and not qimage.isNull()}",
+            flush=True,
+        )
+        if not self._session_active or self._paused or qimage is None or qimage.isNull():
+            return
+        # If we have an active local source running, do not let incoming network frames overwrite the canvas
+        if self.pipeline.video_running:
+            return
+
+        self._s_broadcast.set_value("LIVE")
+        self._s_broadcast.set_color("#10B981")
+        self._s_camera.set_value("REMOTE")
+        self._s_camera.set_color("#10B981")
+
+        # Original View receives the exact incoming network frame,
+        # before YOLO processing adds any overlays.
+        if hasattr(self, "original_canvas"):
+            self.original_canvas.set_frame(qimage)
+
+        # Keep Original View fullscreen live for remote streams.
+        viewer = getattr(self, "_original_fullscreen_viewer", None)
+        if viewer is not None and viewer.isVisible():
+            viewer.set_frame(qimage)
+
+        # Process the same frame through YOLO & Vitals pipeline.
+        # This produces the Assisted View without running a second camera source.
+        self.pipeline.process_incoming_qimage(qimage)
+
+    def on_stream_disconnected(self):
+        """Called when video stream terminates or disconnects."""
+        self._s_broadcast.set_value("IDLE")
+        self._s_broadcast.reset_color()
+        self._s_camera.set_value("OFF")
+        self._s_camera.reset_color()
+        if hasattr(self, 'recorder') and self.recorder.state == STATE_RECORDING:
+            self._s_recording.set_value("ACTIVE")
+            self._s_recording.set_color("#10B981")
+        else:
+            self._s_recording.set_value("OFF")
+            self._s_recording.reset_color()
+        self._s_objects.set_value("0")
+        self._s_objects.reset_color()
+        self._s_confidence.set_value("--")
+        self._s_confidence.reset_color()
+        self.canvas.clear_frame()
+        self.meta_label.setText("NO ACTIVE STREAM")
+        self.frame_lbl.setText("FRAME 0000000")
+        self.status_label.setText("Broadcast ended — Waiting")
+        self.message_center.add_message("Video broadcast ended")
+
+    def _on_stats(self, stats):
+        if hasattr(self, 'recorder'):
+            self.recorder.record_yolo_stats(stats)
+        # Detection summary rows
+        if stats.objects_detected > 0:
+            # Show the actual surgical instrument class(es) reported
+            # by the YOLO11s-seg model.
+            if stats.class_counts:
+                instrument_names = [
+                    f"{name} ({count})" if count > 1 else name
+                    for name, count in stats.class_counts.items()
+                ]
+                instrument_text = ", ".join(instrument_names)
+            else:
+                instrument_text = "Instrument"
+
+            self._d_name.set_value(instrument_text)
+            self._d_name.set_color("#10B981")
+            self._d_status.set_value("DETECTED")
+            self._d_status.set_color("#10B981")
+        else:
+            self._d_name.set_value("--")
+            self._d_name.reset_color()
+            self._d_status.set_value("IDLE")
+            self._d_status.reset_color()
+
+        conf = stats.mean_confidence
+        self._d_conf.set_value(f"{conf:.0f}%" if conf > 0 else "--")
+        self._d_tid.set_value(
+            str(stats.objects_detected) if stats.objects_detected > 0 else "--"
+        )
+        self._d_frames.set_value(str(self._frame_count))
+        self._d_time.set_value(
+            f"{stats.inference_ms:.1f} ms" if stats.inference_ms > 0 else "--"
+        )
+
+        # Update metric summary cards
+        self._m_objects.set_value(str(stats.objects_detected))
+        self._m_conf.set_value(f"{conf:.0f}%" if conf > 0 else "--")
+        self._m_fps.set_value(f"{stats.fps:.1f}" if stats.fps > 0 else "0")
+        self._m_infer.set_value(
+            f"{stats.inference_ms:.1f}" if stats.inference_ms > 0 else "--"
+        )
+
+        # Update live status section
+        self._s_objects.set_value(str(stats.objects_detected))
+        self._s_confidence.set_value(f"{conf:.0f}%" if conf > 0 else "--")
+        if stats.objects_detected > 0:
+            self._s_objects.set_color("#10B981")
+            self._s_confidence.set_color("#10B981")
+        else:
+            self._s_objects.reset_color()
+            self._s_confidence.reset_color()
+
+    def _on_status(self, msg):
+        self.status_label.setText(msg)
+        self.message_center.add_message(msg)
+
+    # ── Button Handlers ───────────────────────────────────────────────
+
+    def set_connection_manager(self, conn_manager):
+        import sys
+        import os
+        root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        robot_console_dir = os.path.join(root_dir, "Robot-Console")
+        if robot_console_dir not in sys.path:
+            sys.path.insert(0, robot_console_dir)
+        try:
+            from services.video_broadcaster import VideoBroadcastService
+        except (ImportError, ModuleNotFoundError):
+            import importlib.util
+            vb_path = os.path.join(robot_console_dir, "services", "video_broadcaster.py")
+            if os.path.exists(vb_path):
+                spec = importlib.util.spec_from_file_location("services.video_broadcaster", vb_path)
+                vb_mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(vb_mod)
+                VideoBroadcastService = vb_mod.VideoBroadcastService
+            else:
+                raise
+
+        self.broadcaster = VideoBroadcastService(conn_manager=conn_manager, parent=self)
+        self.broadcaster.fps_updated.connect(self._on_broadcaster_fps)
+        self.broadcaster.status_changed.connect(self._on_status)
+
+        # Forward broadcaster state to the permanent global sidebar.
+        main_window = self.window()
+        if hasattr(main_window, '_on_broadcast_status_changed'):
+            self.broadcaster.status_changed.connect(
+                main_window._on_broadcast_status_changed
+            )
+
+    def _on_broadcaster_fps(self, fps):
+        # Update FPS label if needed, or leave it to YOLO
+        pass
+
+    def _load_video(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Upload Video", "",
+            "Video Files (*.mp4 *.avi *.mkv *.mov *.wmv);;All Files (*)"
+        )
+        if path:
+            self.pipeline.load_video(path)
+            # Visual state: mark as active
+            self.btn_load_video.setProperty("active", "true")
+            self.btn_load_video.setText("Video Loaded")
+            self.btn_load_video.style().unpolish(self.btn_load_video)
+            self.btn_load_video.style().polish(self.btn_load_video)
+            # Update status section
+            import os as _os
+            self._s_camera.set_value(_os.path.basename(path)[:14])
+            self._s_camera.set_color("#10B981")
+            self._s_recording.set_value("VIDEO")
+            self._s_recording.set_color("#0095FF")
+            self.status_label.setText(f"Loaded: {_os.path.basename(path)}")
+
+    def _broadcast_camera(self):
+        cam_active = self.btn_broadcast_cam.property("active") == "true"
+        if cam_active:
+            self._stop_video()
+        else:
+            # Start camera broadcasting
+            if self.pipeline.load_camera(0):
+                self.btn_broadcast_cam.setProperty("active", "true")
+                self.btn_broadcast_cam.setText("Stop Broadcasting")
+                cam_label = "SIM CAM" if getattr(self.pipeline, "_simulated_camera", False) else "CAM 0"
+                self._s_camera.set_value(cam_label)
+                self._s_camera.set_color("#10B981")
+                self._s_broadcast.set_value("LIVE")
+                self._s_broadcast.set_color("#10B981")
+
+                # Keep the permanent global sidebar synchronized.
+                main_window = self.window()
+                if hasattr(main_window, 'sidebar'):
+                    main_window.sidebar.set_system_status(
+                        "Broadcasting",
+                        "green"
+                    )
+        self.btn_broadcast_cam.style().unpolish(self.btn_broadcast_cam)
+        self.btn_broadcast_cam.style().polish(self.btn_broadcast_cam)
+
+    def _stop_video(self):
+        """Stop any playing video or camera broadcast and clear canvas to default state."""
+        self.pipeline.stop_video()
+        if self.broadcaster:
+            self.broadcaster.stop()
+
+        # Clear both normal video views.
+        self.canvas.clear_frame()
+
+        if hasattr(self, "original_canvas"):
+            self.original_canvas.clear_frame()
+
+        # Reset virtual camera viewport.
+        for canvas in (
+            self.canvas,
+            getattr(self, "original_canvas", None),
+        ):
+            if canvas is not None:
+                canvas._zoom = 1.0
+                canvas._pan_offset = QPointF(0, 0)
+                canvas._rotation = 0.0
+                canvas.update()
+
+        # Close fullscreen video viewers so the UI returns to
+        # the normal video-source page.
+        for viewer_name in (
+            "_assisted_fullscreen_viewer",
+            "_original_fullscreen_viewer",
+        ):
+            viewer = getattr(self, viewer_name, None)
+            if viewer is not None and viewer.isVisible():
+                viewer.close()
+
+        # Reset zoom UI.
+        self.zoom = self.ZOOM_MIN
+        if hasattr(self, "zoom_slider"):
+            self.zoom_slider.blockSignals(True)
+            self.zoom_slider.setValue(int(self.ZOOM_MIN * 10))
+            self.zoom_slider.blockSignals(False)
+
+        # Reset button states
+        self.btn_load_video.setProperty("active", "false")
+        self.btn_load_video.setText("Upload Video")
+        self.btn_load_video.style().unpolish(self.btn_load_video)
+        self.btn_load_video.style().polish(self.btn_load_video)
+
+        self.btn_broadcast_cam.setProperty("active", "false")
+        self.btn_broadcast_cam.setText("Broadcast Camera")
+        self.btn_broadcast_cam.style().unpolish(self.btn_broadcast_cam)
+        self.btn_broadcast_cam.style().polish(self.btn_broadcast_cam)
+
+        # Reset status rows
+        self._s_camera.set_value("OFF")
+        self._s_camera.reset_color()
+        self._s_broadcast.set_value("IDLE")
+        self._s_broadcast.reset_color()
+
+        # Keep the permanent global sidebar synchronized.
+        main_window = self.window()
+        if hasattr(main_window, 'sidebar'):
+            main_window.sidebar.set_system_status(
+                "Broadcasting",
+                "grey"
+            )
+
+        if hasattr(self, 'recorder') and self.recorder.state == STATE_RECORDING:
+            self._s_recording.set_value("ACTIVE")
+            self._s_recording.set_color("#10B981")
+        else:
+            self._s_recording.set_value("OFF")
+            self._s_recording.reset_color()
+        self._s_objects.set_value("0")
+        self._s_objects.reset_color()
+        self._s_confidence.set_value("--")
+        self._s_confidence.reset_color()
+
+        self.meta_label.setText("NO ACTIVE STREAM")
+        self.frame_lbl.setText("FRAME 0000000")
+        self.status_label.setText("Video stopped - Ready")
+        self.message_center.add_message("Video stream stopped")
+        self.btn_broadcast_cam.style().unpolish(self.btn_broadcast_cam)
+        self.btn_broadcast_cam.style().polish(self.btn_broadcast_cam)
+
+    def _open_assisted_fullscreen(self):
+        """Open the current Assisted/YOLO view in fullscreen."""
+        if not hasattr(self, "_assisted_fullscreen_viewer"):
+            self._assisted_fullscreen_viewer = _FullscreenVideoViewer(self)
+
+        self._assisted_fullscreen_viewer.show_feed(
+            self.canvas,
+            "ASSISTED VIEW · YOLO"
+        )
+
+    def _open_original_fullscreen(self):
+        """Open the current Original/Clean view in fullscreen."""
+        if not hasattr(self, "_original_fullscreen_viewer"):
+            self._original_fullscreen_viewer = _FullscreenVideoViewer(self)
+
+        self._original_fullscreen_viewer.show_feed(
+            self.original_canvas,
+            "ORIGINAL VIEW · CLEAN"
+        )
+
+    def _toggle_yolo(self):
+        self._yolo_enabled = not self._yolo_enabled
+        self.pipeline.set_detection(self._yolo_enabled)
+        self.pipeline.set_tracking(self._yolo_enabled)
+
+        # Update both the global sidebar and the Live Video sidebar.
+        main_window = self.window()
+        if hasattr(main_window, '_forward_live_video_status'):
+            main_window._forward_live_video_status(
+                "YOLO",
+                "yellow" if self._yolo_enabled and not self.pipeline.is_model_loaded else
+                "green" if self._yolo_enabled else "grey"
+            )
+
+        self.btn_yolo.setProperty(
+            "active", "true" if self._yolo_enabled else "false"
+        )
+        self.btn_yolo.style().unpolish(self.btn_yolo)
+        self.btn_yolo.style().polish(self.btn_yolo)
+        # Update status section
+        if self._yolo_enabled:
+            self._s_yolo_st.set_value("RUNNING")
+            self._s_yolo_st.set_color("#10B981")
+        else:
+            self._s_yolo_st.set_value("IDLE")
+            self._s_yolo_st.reset_color()
+
+    def _toggle_vitals(self):
+        self._vitals_enabled = not self._vitals_enabled
+        if hasattr(self, 'vitals_hud'):
+            self.vitals_hud.setVisible(self._vitals_enabled)
+            if self._vitals_enabled:
+                self.vitals_hud.raise_()
+        self.btn_vitals.setProperty(
+            "active", "true" if self._vitals_enabled else "false"
+        )
+        self.btn_vitals.setProperty(
+            "accent", "blue" if self._vitals_enabled else ""
+        )
+        self.btn_vitals.style().unpolish(self.btn_vitals)
+        self.btn_vitals.style().polish(self.btn_vitals)
+
+    def set_vitals_model(self, model):
+        """Connect the Live Video HUD and SessionRecorder to PatientVitalsModel."""
+        self._vitals_model = model
+
+        # Use the same authoritative PatientVitalsModel for
+        # the Live Video right-sidebar vitals.
+        if hasattr(self, "right_vitals"):
+            model.vitals_updated.connect(self.right_vitals.update_vitals)
+            self.right_vitals.update_vitals(model.get_display_data())
+        if hasattr(self, 'vitals_hud'):
+            model.vitals_updated.connect(self.vitals_hud.update_vitals)
+            self.vitals_hud.update_vitals(model.get_display_data())
+        if hasattr(self, 'recorder'):
+            model.vitals_updated.connect(self.recorder.record_vitals)
+            self.recorder.record_vitals(model.get_display_data())
+
+    def update_vitals(self, data: dict):
+        """Forward authoritative vitals to the HUD and recorder."""
+        if hasattr(self, 'vitals_hud'):
+            self.vitals_hud.update_vitals(data)
+        if hasattr(self, 'recorder'):
+            self.recorder.record_vitals(data)
+
+    def _toggle_pause(self):
+        self._paused = not self._paused
+        self.btn_pause.setText("\u25B6" if self._paused else "\u275A\u275A")
+        if self._paused:
+            self.message_center.add_message("Video paused")
+        else:
+            self.message_center.add_message("Video resumed")
+
+    def _toggle_action(self, btn):
+        current = btn.property("active") == "true"
+        btn.setProperty("active", "false" if current else "true")
+        btn.style().unpolish(btn)
+        btn.style().polish(btn)
+
+    # ── Zoom ──────────────────────────────────────────────────────────
+
+    def _sync_zoom_from_canvas(self, zoom_val):
+        """Called by the canvas when mouse wheel zoom occurs."""
+        self.zoom = zoom_val
+        self._apply_zoom()
+
+    def _zoom_in(self):
+        self.zoom = min(self.ZOOM_MAX, round(self.zoom + self.ZOOM_STEP, 2))
+        self._apply_zoom()
+
+    def _zoom_out(self):
+        self.zoom = max(self.ZOOM_MIN, round(self.zoom - self.ZOOM_STEP, 2))
+        self._apply_zoom()
+
+    def _zoom_home(self):
+        self.zoom = 1.0
+        self.canvas._pan_offset = QPointF(0, 0)
+        self._apply_zoom()
+
+    def _update_joystick_controls(self):
+        """Handle Thrustmaster virtual camera controls and buttons."""
+        if not hasattr(self, "joystick") or not self.joystick.connected:
+            return
+
+        # Axis 0 -> virtual horizontal pan.
+        # Axis 1 -> virtual vertical pan.
+        pan_x = self.joystick.read_pan_x()
+        pan_y = self.joystick.read_pan_y()
+
+        self.canvas.set_virtual_pan(pan_x, pan_y)
+
+        # Axis 2 -> virtual video rotation.
+        rotation = self.joystick.get_rotation()
+        self.canvas.set_rotation(rotation)
+
+        # Axis 3 -> existing Live Video zoom.
+        zoom = self.joystick.get_zoom()
+        slider_value = int(round(zoom * 10))
+
+        if self.zoom_slider.value() != slider_value:
+            self.zoom_slider.setValue(slider_value)
+
+        # Mirror the virtual camera state into any visible fullscreen view.
+        for viewer_name in (
+            "_assisted_fullscreen_viewer",
+            "_original_fullscreen_viewer",
+        ):
+            viewer = getattr(self, viewer_name, None)
+
+            if viewer is not None and viewer.isVisible():
+                viewer.canvas._zoom = self.canvas._zoom
+                viewer.canvas._pan_offset = QPointF(
+                    self.canvas._pan_offset
+                )
+                viewer.canvas._rotation = self.canvas._rotation
+                viewer.canvas._clamp_pan()
+                viewer.canvas.update()
+
+        # Button presses are edge-triggered so holding a button does
+        # not repeatedly trigger the associated action.
+        button_actions = {
+            9: self._broadcast_camera,  # Physical button 10
+            10: self._toggle_yolo,      # Physical button 11
+            11: self._stop_video,       # Physical button 12
+        }
+
+        for button_index, action in button_actions.items():
+            pressed = self.joystick.is_button_pressed(button_index)
+            previous = self._joystick_buttons.get(button_index, False)
+
+            if pressed and not previous:
+                action()
+
+            self._joystick_buttons[button_index] = pressed
+
+    def _on_zoom_slider(self, value):
+        self.zoom = value / 10.0
+        self.canvas.set_zoom(self.zoom)
+        self._update_zoom_ui()
+
+    def _apply_zoom(self):
+        self.canvas.set_zoom(self.zoom)
+        self.zoom_slider.blockSignals(True)
+        self.zoom_slider.setValue(int(self.zoom * 10))
+        self.zoom_slider.blockSignals(False)
+        self._update_zoom_ui()
+
+    def _update_zoom_ui(self):
+        self.zoom_value_lbl.setText(f"{self.zoom:.1f}\u00D7")
+        roi = round(100 / self.zoom)
+        self.roi_lbl.setText(f"ZOOM {self.zoom:.1f}\u00D7  \u00B7  ROI {roi}%")
+        self.btn_zoom_out.setEnabled(self.zoom > self.ZOOM_MIN)
+        self.btn_zoom_in.setEnabled(self.zoom < self.ZOOM_MAX)
+
+    # ── REC Blink ─────────────────────────────────────────────────────
+
+    def _blink_rec(self):
+        self._rec_visible = not self._rec_visible
+        self.rec_dot.setVisible(self._rec_visible)
+        self.rec_label.setVisible(self._rec_visible)
+
+    # ── Session Recording & Export ─────────────────────────────────────
+
+    # ── Session Recording & Export Styles ──────────────────────────────
+    _STYLE_REC_IDLE = """
+        QPushButton {
+            background-color: #1E293B;
+            color: #94A3B8;
+            border: 1.5px solid #334155;
+            border-radius: 6px;
+            padding: 8px 14px;
+            font-weight: 700;
+            font-size: 13px;
+            min-height: 34px;
+        }
+        QPushButton:hover {
+            background-color: #334155;
+            color: #F8FAFC;
+        }
+    """
+    _STYLE_REC_ACTIVE = """
+        QPushButton {
+            background-color: #1A2E26;
+            color: #10B981;
+            border: 1.5px solid #059669;
+            border-radius: 6px;
+            padding: 8px 14px;
+            font-weight: 700;
+            font-size: 13px;
+            min-height: 34px;
+        }
+        QPushButton:hover {
+            background-color: #059669;
+            color: #FFFFFF;
+        }
+    """
+    _STYLE_REC_FINALIZING = """
+        QPushButton {
+            background-color: #1E293B;
+            color: #0095FF;
+            border: 1.5px solid #0284C7;
+            border-radius: 6px;
+            padding: 8px 14px;
+            font-weight: 700;
+            font-size: 13px;
+            min-height: 34px;
+        }
+        QPushButton:disabled {
+            background-color: #1E293B;
+            color: #0095FF;
+            border-color: #0284C7;
+        }
+    """
+    _STYLE_REC_EXPORTED = """
+        QPushButton {
+            background-color: #132A1C;
+            color: #34D399;
+            border: 1.5px solid #059669;
+            border-radius: 6px;
+            padding: 8px 14px;
+            font-weight: 700;
+            font-size: 13px;
+            min-height: 34px;
+        }
+        QPushButton:hover {
+            background-color: #059669;
+            color: #FFFFFF;
+        }
+    """
+    _STYLE_REC_ERROR = """
+        QPushButton {
+            background-color: #3B1C24;
+            color: #EF4444;
+            border: 1.5px solid #DC2626;
+            border-radius: 6px;
+            padding: 8px 14px;
+            font-weight: 700;
+            font-size: 13px;
+            min-height: 34px;
+        }
+        QPushButton:hover {
+            background-color: #DC2626;
+            color: #FFFFFF;
+        }
+    """
+
+    _STYLE_START_SESSION = """
+        QPushButton {
+            background-color: #064E3B;
+            color: #34D399;
+            border: 1.5px solid #059669;
+            border-radius: 6px;
+            padding: 8px 12px;
+            font-weight: 700;
+            font-size: 12px;
+            min-height: 34px;
+        }
+        QPushButton:hover {
+            background-color: #059669;
+            color: #FFFFFF;
+        }
+        QPushButton:disabled {
+            background-color: #1E293B;
+            color: #475569;
+            border-color: #334155;
+        }
+    """
+    _STYLE_STOP_SESSION = """
+        QPushButton {
+            background-color: #450A0A;
+            color: #F87171;
+            border: 1.5px solid #DC2626;
+            border-radius: 6px;
+            padding: 8px 12px;
+            font-weight: 700;
+            font-size: 12px;
+            min-height: 34px;
+        }
+        QPushButton:hover {
+            background-color: #DC2626;
+            color: #FFFFFF;
+        }
+        QPushButton:disabled {
+            background-color: #1E293B;
+            color: #475569;
+            border-color: #334155;
+        }
+    """
+
+    def set_session_info(self, session_id: str, username: str = "", role: str = ""):
+        """Initialize session metadata and start continuous session recording."""
+        self._session_id = session_id
+        self._username = username
+        self._role = role
+        if hasattr(self, 'recorder'):
+            self.start_session(session_id=session_id)
+
+    def start_session(self, session_id: str = None):
+        """Start a clinical session and begin session recording."""
+        if session_id:
+            self._session_id = session_id
+        elif not self._session_id:
+            import uuid
+            self._session_id = f"SES-{uuid.uuid4().hex[:8].upper()}"
+
+        if hasattr(self, 'recorder'):
+            if self.recorder.state != STATE_RECORDING:
+                self.recorder.start_recording(
+                    session_id=self._session_id,
+                    username=self._username,
+                    role=self._role,
+                )
+
+        # Allow live video frames to populate the views.
+        self._session_active = True
+
+        self.status_label.setText(f"Session {self._session_id} active - Recording")
+        self.message_center.add_message(f"Session {self._session_id} started")
+
+    def stop_session(self):
+        """End the current session, stop live processing, and export recording."""
+
+        if not hasattr(self, 'recorder'):
+            return
+
+        if self.recorder.state == STATE_RECORDING:
+            self.message_center.add_message(
+                f"Ending session {self._session_id}..."
+            )
+
+            # Prevent incoming camera/network frames from repopulating
+            # the views after the clinical session has ended.
+            self._session_active = False
+
+            # Stop the active video/YOLO processing path.
+            if hasattr(self, 'pipeline'):
+                try:
+                    self.pipeline.stop_video()
+                except Exception:
+                    pass
+
+            # Close any fullscreen video viewers.
+            for viewer_name in (
+                "_assisted_fullscreen_viewer",
+                "_original_fullscreen_viewer",
+            ):
+                viewer = getattr(self, viewer_name, None)
+                if viewer is not None:
+                    viewer.close()
+
+            # Clear both live video views.
+            if hasattr(self, 'canvas'):
+                self.canvas.clear_frame()
+
+            if hasattr(self, 'original_canvas'):
+                self.original_canvas.clear_frame()
+
+            # Keep the session recording/export workflow intact.
+            self._export_session()
+
+        elif self.recorder.state in (STATE_EXPORTED, STATE_ERROR):
+            self._export_session()
+
+        else:
+            self.status_label.setText("No active session to stop")
+
+    def record_alert(self, alert_dict: dict):
+        """Record an alert event into the session recorder."""
+        if hasattr(self, 'recorder'):
+            self.recorder.record_alert(alert_dict)
+
+    def _on_record_session_clicked(self):
+        """Handle clicking the primary record session control."""
+        if not hasattr(self, 'recorder'):
+            return
+        if self.recorder.state == STATE_IDLE:
+            self.start_session(session_id=self._session_id)
+        elif self.recorder.state == STATE_RECORDING:
+            self.stop_session()
+        elif self.recorder.state in (STATE_EXPORTED, STATE_ERROR):
+            self._export_session()
+
+    def _toggle_recording(self):
+        """Backward-compatible alias for record session action."""
+        self._on_record_session_clicked()
+
+    def _export_session(self):
+        """Trigger session recording finalization and PDF summary export."""
+        if not hasattr(self, 'recorder'):
+            return
+        if self.recorder.state == STATE_FINALIZING:
+            return
+
+        self.status_label.setText("Exporting session (generating MP4 + PDF)...")
+        self.message_center.add_message("Session export initiated...")
+        self.recorder.export_session()
+
+    def _on_export_started(self):
+        self.status_label.setText("Exporting session...")
+
+    def _on_export_finished(self, mp4_path: str, pdf_path: str):
+        self.status_label.setText("Session exported successfully")
+        self.message_center.add_message(
+            f"Export complete: {os.path.basename(mp4_path) if mp4_path else 'No video'}, "
+            f"{os.path.basename(pdf_path)}"
+        )
+        duration = self.recorder.get_session_data().get("duration", "00:00:00")
+        dialog = SessionExportDialog(
+            session_id=self.recorder.get_session_data().get("session_id", self._session_id),
+            mp4_path=mp4_path,
+            pdf_path=pdf_path,
+            duration=duration,
+            parent=self,
+        )
+        dialog.exec()
+
+    def _on_export_failed(self, error_msg: str):
+        self.status_label.setText(f"Export failed: {error_msg}")
+        self.message_center.add_message(f"Export error: {error_msg}")
+
+        QMessageBox.warning(
+            self,
+            "Session Export Failed",
+            f"Failed to export session:\n\n{error_msg}"
+        )
+
+    def _on_recorder_state(self, state: str):
+        """Update buttons, badges, styles, and status labels to match the real recorder state."""
+
+        # Update the permanent global sidebar using the real recorder state.
+        main_window = self.window()
+        if hasattr(main_window, 'sidebar'):
+            recording_status = {
+                STATE_RECORDING: "green",
+                STATE_FINALIZING: "yellow",
+                STATE_ERROR: "red",
+                STATE_EXPORTED: "grey",
+                STATE_IDLE: "grey",
+            }.get(state, "grey")
+            main_window.sidebar.set_system_status(
+                "Recording",
+                recording_status
+            )
+
+        if state == STATE_RECORDING:
+            self._s_recording.set_value("ACTIVE")
+            self._s_recording.set_color("#10B981")
+            self.btn_record_session.setText("● RECORDING")
+            self.btn_record_session.setStyleSheet(self._STYLE_REC_ACTIVE)
+            self.btn_record_session.setEnabled(True)
+            self.btn_export_session.setText("EXPORT SESSION")
+            self.btn_export_session.setEnabled(True)
+            if hasattr(self, 'btn_header_export'):
+                self.btn_header_export.setText("EXPORT SESSION")
+                self.btn_header_export.setEnabled(True)
+            if hasattr(self, 'btn_start_session'):
+                self.btn_start_session.setText("● ACTIVE")
+                self.btn_start_session.setEnabled(False)
+            if hasattr(self, 'btn_stop_session'):
+                self.btn_stop_session.setText("■ STOP SESSION")
+                self.btn_stop_session.setEnabled(True)
+            if hasattr(self, 'btn_header_start'):
+                self.btn_header_start.setText("● ACTIVE")
+                self.btn_header_start.setEnabled(False)
+            if hasattr(self, 'btn_header_stop'):
+                self.btn_header_stop.setText("■ STOP SESSION")
+                self.btn_header_stop.setEnabled(True)
+            self.status_label.setText("Session recording active")
+
+        elif state == STATE_FINALIZING:
+            self._s_recording.set_value("FINALIZING")
+            self._s_recording.set_color("#0095FF")
+            self.btn_record_session.setText("FINALIZING...")
+            self.btn_record_session.setStyleSheet(self._STYLE_REC_FINALIZING)
+            self.btn_record_session.setEnabled(False)
+            self.btn_export_session.setText("FINALIZING...")
+            self.btn_export_session.setEnabled(False)
+            if hasattr(self, 'btn_header_export'):
+                self.btn_header_export.setText("FINALIZING...")
+                self.btn_header_export.setEnabled(False)
+            if hasattr(self, 'btn_start_session'):
+                self.btn_start_session.setText("FINALIZING...")
+                self.btn_start_session.setEnabled(False)
+            if hasattr(self, 'btn_stop_session'):
+                self.btn_stop_session.setText("FINALIZING...")
+                self.btn_stop_session.setEnabled(False)
+            if hasattr(self, 'btn_header_start'):
+                self.btn_header_start.setText("FINALIZING...")
+                self.btn_header_start.setEnabled(False)
+            if hasattr(self, 'btn_header_stop'):
+                self.btn_header_stop.setText("FINALIZING...")
+                self.btn_header_stop.setEnabled(False)
+            self.status_label.setText("Finalizing video & generating PDF report...")
+
+        elif state == STATE_EXPORTED:
+            self._s_recording.set_value("EXPORTED")
+            self._s_recording.set_color("#10B981")
+            self.btn_record_session.setText("SESSION EXPORTED")
+            self.btn_record_session.setStyleSheet(self._STYLE_REC_EXPORTED)
+            self.btn_record_session.setEnabled(True)
+            self.btn_export_session.setText("EXPORT AGAIN")
+            self.btn_export_session.setEnabled(True)
+            if hasattr(self, 'btn_header_export'):
+                self.btn_header_export.setText("EXPORT AGAIN")
+                self.btn_header_export.setEnabled(True)
+            if hasattr(self, 'btn_start_session'):
+                self.btn_start_session.setText("▶ START NEW SESSION")
+                self.btn_start_session.setEnabled(True)
+            if hasattr(self, 'btn_stop_session'):
+                self.btn_stop_session.setText("SESSION EXPORTED")
+                self.btn_stop_session.setEnabled(False)
+            if hasattr(self, 'btn_header_start'):
+                self.btn_header_start.setText("▶ START NEW SESSION")
+                self.btn_header_start.setEnabled(True)
+            if hasattr(self, 'btn_header_stop'):
+                self.btn_header_stop.setText("SESSION EXPORTED")
+                self.btn_header_stop.setEnabled(False)
+            self.status_label.setText("Session exported successfully")
+
+        elif state == STATE_ERROR:
+            self._s_recording.set_value("ERROR")
+            self._s_recording.set_color("#EF4444")
+            self.btn_record_session.setText("RECORDING ERROR")
+            self.btn_record_session.setStyleSheet(self._STYLE_REC_ERROR)
+            self.btn_record_session.setEnabled(True)
+            self.btn_export_session.setText("RETRY EXPORT")
+            self.btn_export_session.setEnabled(True)
+            if hasattr(self, 'btn_header_export'):
+                self.btn_header_export.setText("RETRY EXPORT")
+                self.btn_header_export.setEnabled(True)
+            if hasattr(self, 'btn_start_session'):
+                self.btn_start_session.setText("▶ RETRY SESSION")
+                self.btn_start_session.setEnabled(True)
+            if hasattr(self, 'btn_stop_session'):
+                self.btn_stop_session.setText("■ STOP SESSION")
+                self.btn_stop_session.setEnabled(False)
+            if hasattr(self, 'btn_header_start'):
+                self.btn_header_start.setText("▶ RETRY SESSION")
+                self.btn_header_start.setEnabled(True)
+            if hasattr(self, 'btn_header_stop'):
+                self.btn_header_stop.setText("■ STOP SESSION")
+                self.btn_header_stop.setEnabled(False)
+            self.status_label.setText("Export error occurred")
+
+        else:  # STATE_IDLE
+            self._s_recording.set_value("IDLE")
+            self._s_recording.reset_color()
+            self.btn_record_session.setText("● RECORD SESSION")
+            self.btn_record_session.setStyleSheet(self._STYLE_REC_IDLE)
+            self.btn_record_session.setEnabled(True)
+            self.btn_export_session.setText("EXPORT SESSION")
+            self.btn_export_session.setEnabled(False)
+            if hasattr(self, 'btn_header_export'):
+                self.btn_header_export.setText("EXPORT SESSION")
+                self.btn_header_export.setEnabled(False)
+            if hasattr(self, 'btn_start_session'):
+                self.btn_start_session.setText("▶ START SESSION")
+                self.btn_start_session.setEnabled(True)
+            if hasattr(self, 'btn_stop_session'):
+                self.btn_stop_session.setText("■ STOP SESSION")
+                self.btn_stop_session.setEnabled(False)
+            if hasattr(self, 'btn_header_start'):
+                self.btn_header_start.setText("▶ START SESSION")
+                self.btn_header_start.setEnabled(True)
+            if hasattr(self, 'btn_header_stop'):
+                self.btn_header_stop.setText("■ STOP SESSION")
+                self.btn_header_stop.setEnabled(False)
+            self.status_label.setText("Recording idle")
+

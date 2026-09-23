@@ -69,7 +69,7 @@ class PatientSidebar(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedWidth(290)
+        self.setFixedWidth(320)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -222,33 +222,32 @@ class PatientSidebar(QWidget):
 
         # --- System Status card ---
         status_card = SidebarCard("System Status")
-        status_items = [
-            ("Manipulator", "Connected", "#10B981"),
-            ("Vision", "30 FPS", "#10B981"),
-            ("YOLO", "Running", "#10B981"),
-            ("Recording", "OFF", "#6B7B8D"),
-            ("Network", "Stable", "#10B981"),
-            ("Storage", "82%", "#F5F7FA"),
-        ]
-        for label, value, color in status_items:
+        self._system_status_dots = {}
+
+        for label in (
+            "Manipulator",
+            "YOLO",
+            "Recording",
+            "Network",
+            "Storage",
+            "Camera",
+            "Broadcasting",
+        ):
             row = QHBoxLayout()
             row.setContentsMargins(0, 2, 0, 2)
+
             lbl = QLabel(label)
             lbl.setObjectName("SystemStatusLabel")
-            val_row = QHBoxLayout()
-            val_row.setSpacing(6)
-            if color == "#10B981":
-                dot = _StatusDot(color)
-                val_row.addWidget(dot)
-            val = QLabel(value)
-            val.setObjectName("SystemStatusValue")
-            val.setStyleSheet(f"color: {color};")
-            val.setAlignment(Qt.AlignmentFlag.AlignRight)
-            val_row.addWidget(val)
+
+            dot = _StatusDot("#6B7B8D")
+            self._system_status_dots[label] = dot
+
             row.addWidget(lbl)
             row.addStretch()
-            row.addLayout(val_row)
+            row.addWidget(dot)
+
             status_card.layout.addLayout(row)
+
         layout.addWidget(status_card)
 
         layout.addStretch()
@@ -257,6 +256,32 @@ class PatientSidebar(QWidget):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.addWidget(scroll)
+
+    def set_system_status(self, component: str, state: str):
+        """Set a colour-only status indicator for a system component."""
+        dot = self._system_status_dots.get(component)
+        if dot is None:
+            return
+
+        colors = {
+            "green": "#10B981",
+            "yellow": "#F59E0B",
+            "red": "#EF4444",
+            "grey": "#6B7B8D",
+            "gray": "#6B7B8D",
+        }
+
+        dot._color = QColor(colors.get(state.lower(), "#6B7B8D"))
+        dot.update()
+
+    def set_system_statuses(self, statuses: dict):
+        """Update multiple colour-only system status indicators."""
+        if not isinstance(statuses, dict):
+            return
+
+        for component, state in statuses.items():
+            self.set_system_status(component, str(state))
+
 
     def set_vitals_model(self, model):
         """Connect to the Authoritative PatientVitalsModel."""

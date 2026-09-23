@@ -42,6 +42,8 @@ class PatientVitalsModel(QObject):
         self._hr: Optional[float] = None
         self._spo2: Optional[float] = None
         self._bp: Optional[str] = None
+        self._systolic_bp: Optional[float] = None
+        self._diastolic_bp: Optional[float] = None
         self._temperature: Optional[float] = None
         self._respiration: Optional[float] = None
         self._etco2: Optional[float] = None
@@ -69,6 +71,14 @@ class PatientVitalsModel(QObject):
     @property
     def blood_pressure(self) -> Optional[str]:
         return self._bp
+
+    @property
+    def systolic_bp(self) -> Optional[float]:
+        return self._systolic_bp
+
+    @property
+    def diastolic_bp(self) -> Optional[float]:
+        return self._diastolic_bp
 
     @property
     def temperature(self) -> Optional[float]:
@@ -109,6 +119,8 @@ class PatientVitalsModel(QObject):
         self._hr = None
         self._spo2 = None
         self._bp = None
+        self._systolic_bp = None
+        self._diastolic_bp = None
         self._temperature = None
         self._respiration = None
         self._etco2 = None
@@ -167,35 +179,56 @@ class PatientVitalsModel(QObject):
                 self._set_state(self.STATE_INVALID)
                 return
 
-        # 3. Blood Pressure (must be format "SYS/DIA" or both sys & dia provided)
-        bp_val = payload.get("blood_pressure", payload.get("bp"))
+        # 3. Blood Pressure (must be format "SYS/DIA", systolic_bp/diastolic_bp, or nibp_s/nibp_d)
         parsed_bp = None
-        if bp_val is not None:
-            bp_str = str(bp_val).strip()
-            if "/" in bp_str:
-                parts = bp_str.split("/")
-                if len(parts) == 2:
-                    try:
-                        sys_p, dia_p = float(parts[0]), float(parts[1])
-                        if 30 <= sys_p <= 300 and 20 <= dia_p <= 200:
-                            parsed_bp = f"{int(round(sys_p))}/{int(round(dia_p))}"
-                        else:
-                            self._set_state(self.STATE_INVALID)
-                            return
-                    except ValueError:
-                        self._set_state(self.STATE_INVALID)
-                        return
-            else:
-                self._set_state(self.STATE_INVALID)
-                return
-        elif "nibp_s" in payload and "nibp_d" in payload:
+        parsed_sys = None
+        parsed_dia = None
+
+        sys_direct = payload.get("systolic_bp")
+        dia_direct = payload.get("diastolic_bp")
+        if sys_direct is not None and dia_direct is not None:
             try:
-                sys_p = float(payload["nibp_s"])
-                dia_p = float(payload["nibp_d"])
-                if 30 <= sys_p <= 300 and 20 <= dia_p <= 200:
-                    parsed_bp = f"{int(round(sys_p))}/{int(round(dia_p))}"
+                s_val = float(sys_direct)
+                d_val = float(dia_direct)
+                if 30 <= s_val <= 300 and 20 <= d_val <= 200:
+                    parsed_sys = s_val
+                    parsed_dia = d_val
+                    parsed_bp = f"{int(round(s_val))}/{int(round(d_val))}"
             except (ValueError, TypeError):
                 pass
+
+        if parsed_bp is None:
+            bp_val = payload.get("blood_pressure", payload.get("bp"))
+            if bp_val is not None:
+                bp_str = str(bp_val).strip()
+                if "/" in bp_str:
+                    parts = bp_str.split("/")
+                    if len(parts) == 2:
+                        try:
+                            sys_p, dia_p = float(parts[0]), float(parts[1])
+                            if 30 <= sys_p <= 300 and 20 <= dia_p <= 200:
+                                parsed_sys = sys_p
+                                parsed_dia = dia_p
+                                parsed_bp = f"{int(round(sys_p))}/{int(round(dia_p))}"
+                            else:
+                                self._set_state(self.STATE_INVALID)
+                                return
+                        except ValueError:
+                            self._set_state(self.STATE_INVALID)
+                            return
+                else:
+                    self._set_state(self.STATE_INVALID)
+                    return
+            elif "nibp_s" in payload and "nibp_d" in payload:
+                try:
+                    sys_p = float(payload["nibp_s"])
+                    dia_p = float(payload["nibp_d"])
+                    if 30 <= sys_p <= 300 and 20 <= dia_p <= 200:
+                        parsed_sys = sys_p
+                        parsed_dia = dia_p
+                        parsed_bp = f"{int(round(sys_p))}/{int(round(dia_p))}"
+                except (ValueError, TypeError):
+                    pass
 
         # 4. Temperature (must be plausible if present: 25–45 °C)
         temp_val = payload.get("temperature", payload.get("temp", payload.get("body_temperature")))
@@ -243,6 +276,8 @@ class PatientVitalsModel(QObject):
         self._hr = parsed_hr
         self._spo2 = parsed_spo2
         self._bp = parsed_bp
+        self._systolic_bp = parsed_sys
+        self._diastolic_bp = parsed_dia
         self._temperature = parsed_temp
         self._last_timestamp = datetime.now()
 
@@ -254,6 +289,21 @@ class PatientVitalsModel(QObject):
 
         # Broadcast update to all subscribers
         self.vitals_updated.emit(self.get_display_data())
+
+    def get_numeric_snapshot(self) -> Dict[str, Any]:
+        """Return authoritative raw numeric vitals snapshot."""
+        return {
+            "heart_rate": self._hr,
+            "spo2": self._spo2,
+            "systolic_bp": self._systolic_bp,
+            "diastolic_bp": self._diastolic_bp,
+            "temperature": self._temperature,
+            "respiration": self._respiration,
+            "etco2": self._etco2,
+            "ecg_status": self._ecg_status,
+            "status": self._state,
+            "timestamp": self._last_timestamp.isoformat() if self._last_timestamp else None,
+        }
 
     def get_display_data(self) -> Dict[str, Any]:
         """Return authoritative formatted dictionary suitable for UI presentation.
@@ -267,6 +317,10 @@ class PatientVitalsModel(QObject):
             etco2: "38" or "--"
             ecg_status: "NORMAL SINUS"
             status: "LIVE" | "STALE" | "DISCONNECTED" | "NO DATA" | "INVALID"
+        Also includes raw numeric values for programmatic consumers:
+            systolic_bp: float or None
+            diastolic_bp: float or None
+            heart_rate: float or None
         """
         is_live = (self._state == self.STATE_LIVE)
         is_stale = (self._state == self.STATE_STALE)
@@ -287,6 +341,9 @@ class PatientVitalsModel(QObject):
                 "hr": "--",
                 "spo2": "--",
                 "bp": "--",
+                "systolic_bp": None,
+                "diastolic_bp": None,
+                "heart_rate": None,
                 "temperature": "--",
                 "respiration": "--",
                 "etco2": "--",
@@ -309,6 +366,9 @@ class PatientVitalsModel(QObject):
             "hr": hr_str,
             "spo2": spo2_str,
             "bp": bp_str,
+            "systolic_bp": self._systolic_bp,
+            "diastolic_bp": self._diastolic_bp,
+            "heart_rate": self._hr,
             "temperature": temp_str,
             "respiration": resp_str,
             "etco2": etco2_str,

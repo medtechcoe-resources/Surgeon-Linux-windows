@@ -1,6 +1,8 @@
 import sys
 import os
 import logging
+import time
+import shutil
 
 log = logging.getLogger(__name__)
 
@@ -8,12 +10,12 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QStackedWidget, QScrollArea)
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 
 from theme_manager import ThemeManager
 
 from widgets.header import Header
-from widgets.nav_tabs import NavBar
+from widgets.nav_tabs import NavBar, _draw_users
 from widgets.patient_sidebar import PatientSidebar
 from widgets.status_bar import StatusBar
 
@@ -22,12 +24,14 @@ from screens.live_video import LiveVideoScreen
 from screens.live_control import LiveControlScreen
 from screens.settings import SettingsScreen
 from screens.comm_center import CommCenterScreen
+from screens.user_management import UserManagementScreen
 
 from models.patient_vitals_model import PatientVitalsModel
 
 from shared_networking.connection_manager import ConnectionManager
 from shared_networking.database import AetherDatabase
 from shared_networking.authentication import AuthManager
+from shared_networking.authorization import AuthorizationService, PERM_USER_MANAGE
 from shared_networking.login_dialog import LoginDialog
 from shared_networking.config import DATABASE_PATH
 
@@ -86,8 +90,38 @@ class AetherConsole(QMainWindow):
             scroller.setWidget(screen)
             self.stack.addWidget(scroller)
 
+        # ── Authoritative Server-Side User Management Check ───────
+        self.user_mgmt_screen = None
+        db = (getattr(self._auth_manager, "db", None) or
+              getattr(self._auth_manager, "_db", None)) if self._auth_manager else None
+        if self._session_id and db:
+            try:
+                authz = AuthorizationService(db)
+                authz_res = authz.authorize(self._session_id, PERM_USER_MANAGE)
+                if authz_res.allowed:
+                    # Role and scope come strictly from server-validated session
+                    admin_role = authz_res.actor_role
+                    self.user_mgmt_screen = UserManagementScreen(
+                        session_id=self._session_id,
+                        role=admin_role,
+                        auth_manager=self._auth_manager,
+                    )
+                    scroller = QScrollArea()
+                    scroller.setWidgetResizable(True)
+                    scroller.setFrameShape(QScrollArea.Shape.NoFrame)
+                    scroller.setWidget(self.user_mgmt_screen)
+                    self.stack.addWidget(scroller)
+                    self.nav.add_tab("User Management", _draw_users)
+            except Exception as e:
+                log.warning(f"Error authorizing PERM_USER_MANAGE: {e}")
+
         content_h.addWidget(self.stack, 1)
         root.addWidget(content_wrap, 1)
+
+        # The Patient Sidebar is global everywhere except Live Video.
+        # Live Video uses its own local left panel.
+        self.stack.currentChanged.connect(self._update_sidebar_visibility)
+        self._update_sidebar_visibility(self.stack.currentIndex())
 
         # Status bar
         self.status_bar_widget = StatusBar()
@@ -116,9 +150,29 @@ class AetherConsole(QMainWindow):
         self._conn_manager.enable_auto_reconnect(True)
 
         # Dedicated TCP Video Receiver on Port 5001
+        self._last_video_frame_time = 0.0
+        self._camera_connected = False
+
         self.video_receiver = VideoReceiver(parent=self)
         self.video_receiver.frame_received.connect(self.live_video.update_frame)
+        self.video_receiver.frame_received.connect(self._on_video_frame_received)
         self.video_receiver.status_changed.connect(self._on_video_status_changed)
+
+        self.live_video.pipeline.model_loaded.connect(self._on_yolo_model_loaded)
+        self.live_video.pipeline.status_changed.connect(self._on_yolo_status_changed)
+
+        self._camera_status_timer = QTimer(self)
+        self._camera_status_timer.setInterval(1000)
+        self._camera_status_timer.timeout.connect(self._check_camera_status)
+        self._camera_status_timer.start()
+
+        # Global storage health check.
+        self._storage_status_timer = QTimer(self)
+        self._storage_status_timer.setInterval(5000)
+        self._storage_status_timer.timeout.connect(self._check_storage_status)
+        self._storage_status_timer.start()
+        self._check_storage_status()
+
         self.video_receiver.start()
 
         # Wire Comm Center to connection manager
@@ -129,27 +183,150 @@ class AetherConsole(QMainWindow):
         if auth_manager:
             self.settings.set_auth_context(auth_manager, username, role)
 
-        # Wire Live Video to connection manager
+        # Wire Live Video to connection manager and session metadata
         self.live_video.set_connection_manager(self._conn_manager)
+        self.live_video.set_session_info(session_id, username, role)
 
         # Authoritative Patient Vitals Model (Single source of truth)
         self.patient_vitals_model = PatientVitalsModel(parent=self)
         self.sidebar.set_vitals_model(self.patient_vitals_model)
+        self.live_video.set_live_video_vitals_model(self.patient_vitals_model)
         self.live_video.set_vitals_model(self.patient_vitals_model)
 
         # Route messages to appropriate screens
         self._conn_manager.message_received.connect(self._on_message_received)
+        self._conn_manager.connected.connect(self._on_broker_connected)
         self._conn_manager.disconnected.connect(self._on_broker_disconnected)
 
         # Auto-connect to broker on startup
         self._conn_manager.connect_to_broker()
 
+    def _on_video_frame_received(self, _qimage):
+        """Record the arrival time of the latest valid video frame."""
+        self._last_video_frame_time = time.monotonic()
+
+        if hasattr(self, 'sidebar'):
+            self._forward_live_video_status("Camera", "green")
+
+    def _check_camera_status(self):
+        """Update Camera status based on recent frame reception."""
+        if not hasattr(self, 'sidebar'):
+            return
+
+        if not self._camera_connected:
+            return
+
+        elapsed = time.monotonic() - self._last_video_frame_time
+
+        if elapsed <= 1.5:
+            self._forward_live_video_status("Camera", "green")
+        elif elapsed <= 3.0:
+            self._forward_live_video_status("Camera", "yellow")
+        else:
+            self._forward_live_video_status("Camera", "red")
+
     def _on_video_status_changed(self, status: str):
+        if hasattr(self, 'sidebar'):
+            if status == "Disconnected":
+                self._camera_connected = False
+                self._forward_live_video_status("Camera", "red")
+            elif status.startswith("Connected:"):
+                self._camera_connected = True
+                self._last_video_frame_time = time.monotonic()
+                self._forward_live_video_status("Camera", "yellow")
+
         if status == "Disconnected":
             self.live_video.on_stream_disconnected()
 
+    def _check_storage_status(self):
+        """Update the global Storage indicator from actual local disk capacity."""
+        if not hasattr(self, 'sidebar'):
+            return
+
+        try:
+            usage = shutil.disk_usage("/")
+            total = usage.total
+            free = usage.free
+
+            if total <= 0:
+                status = "grey"
+            else:
+                free_ratio = free / total
+
+                if free_ratio <= 0.10:
+                    status = "red"
+                elif free_ratio <= 0.20:
+                    status = "yellow"
+                else:
+                    status = "green"
+
+            self._forward_live_video_status("Storage", status)
+
+        except OSError:
+            self._forward_live_video_status("Storage", "red")
+
+    def _on_yolo_model_loaded(self, loaded: bool):
+        """Update global YOLO status when the model finishes loading."""
+        if not hasattr(self, 'sidebar'):
+            return
+
+        if not loaded:
+            self._forward_live_video_status("YOLO", "red")
+            return
+
+        if self.live_video.pipeline.detection_enabled:
+            self._forward_live_video_status("YOLO", "green")
+        else:
+            self._forward_live_video_status("YOLO", "grey")
+
+    def _on_yolo_status_changed(self, msg: str):
+        """Reflect important YOLO pipeline states in the global sidebar."""
+        if not hasattr(self, 'sidebar'):
+            return
+
+        text = str(msg).lower()
+
+        if "loading yolo model" in text:
+            self._forward_live_video_status("YOLO", "yellow")
+        elif "model load failed" in text or "ultralytics not installed" in text:
+            self._forward_live_video_status("YOLO", "red")
+        elif "yolo model ready" in text:
+            if self.live_video.pipeline.detection_enabled:
+                self._forward_live_video_status("YOLO", "green")
+            else:
+                self._forward_live_video_status("YOLO", "grey")
+
+    def _on_broadcast_status_changed(self, msg: str):
+        """Reflect the real video broadcaster state in the global sidebar."""
+        if not hasattr(self, 'sidebar'):
+            return
+
+        text = str(msg).lower()
+
+        if "broadcasting started" in text or "broadcast resumed" in text:
+            status = "green"
+        elif "tcp 5001 connected" in text:
+            status = "green"
+        elif "broadcast paused" in text:
+            status = "yellow"
+        elif "broadcast ended" in text:
+            status = "grey"
+        elif "error" in text or "failed" in text:
+            status = "red"
+        else:
+            return
+
+        self._forward_live_video_status("Broadcasting", status)
+
+    def _on_broker_connected(self):
+        """Mark broker network connection as healthy in the global sidebar."""
+        if hasattr(self, 'sidebar'):
+            self._forward_live_video_status("Network", "green")
+
     def _on_broker_disconnected(self):
         """Handle broker disconnection by marking telemetry and vitals disconnected/stale in UI."""
+        if hasattr(self, 'sidebar'):
+            self._forward_live_video_status("Network", "red")
         if hasattr(self, 'live_control'):
             self.live_control.set_telemetry_disconnected()
         if hasattr(self, 'patient_vitals_model'):
@@ -165,15 +342,52 @@ class AetherConsole(QMainWindow):
 
         if topic == "robot_telemetry":
             self.live_control.update_telemetry(payload)
+
+            # Robot telemetry is the authoritative Manipulator health signal.
+            robot_status = str(payload.get("robot_status", "")).upper()
+            servo_status = str(payload.get("servo_status", "")).upper()
+            torque_status = str(payload.get("torque_status", "")).upper()
+
+            if robot_status == "ACTIVE":
+                if servo_status not in ("", "NOMINAL") or torque_status not in ("", "NOMINAL"):
+                    manipulator_status = "yellow"
+                else:
+                    manipulator_status = "green"
+            elif robot_status == "IDLE":
+                manipulator_status = "grey"
+            else:
+                manipulator_status = "red"
+
+            if hasattr(self, 'sidebar'):
+                self._forward_live_video_status(
+                    "Manipulator",
+                    manipulator_status
+                )
         elif topic == "alerts":
             self.live_control.update_alerts(payload)
+            self.live_video.record_alert(payload)
         elif topic == "patient_vitals":
             self.patient_vitals_model.update_vitals(payload)
 
+    def _update_sidebar_visibility(self, index):
+        # Live Video is the second screen (index 1).
+        is_live_video = (index == 1)
+        self.sidebar.setVisible(not is_live_video)
+
+    def _forward_live_video_status(self, component, state):
+        """Update both the global sidebar and the Live Video sidebar."""
+        if hasattr(self, "sidebar"):
+            self.sidebar.set_system_status(component, state)
+
+        if hasattr(self, "live_video"):
+            self.live_video.set_live_video_system_status(component, state)
+
     def closeEvent(self, event):
-        """Clean up networking on window close."""
+        """Clean up networking and session recording on window close."""
         if hasattr(self, 'video_receiver'):
             self.video_receiver.stop()
+        if hasattr(self, 'live_video') and hasattr(self.live_video, 'recorder'):
+            self.live_video.recorder.stop_recording()
         self._conn_manager.cleanup()
         event.accept()
 
@@ -215,7 +429,24 @@ def main():
     if login.exec() != LoginDialog.DialogCode.Accepted:
         sys.exit(0)
 
-    # ── Launch Main Window ────────────────────────────────────
+    # ── Role Validation & Launch ──────────────────────────────
+    # ONE application shell (AetherConsole) for all roles.
+    # Administrative tabs are conditionally unlocked via server-side RBAC.
+    VALID_ROLES = frozenset({
+        "app_admin", "hospital_admin",
+        "user", "surgeon", "doctor", "observer",
+        "technician", "robot_console", "data_generator",
+    })
+
+    if login.role not in VALID_ROLES:
+        auth.remove_session(login.session_id)
+        from PyQt6.QtWidgets import QMessageBox
+        QMessageBox.critical(
+            None, "Access Denied",
+            f"Role '{login.role}' is not recognized. Session invalidated.",
+        )
+        sys.exit(1)
+
     window = AetherConsole(
         username=login.username,
         role=login.role,

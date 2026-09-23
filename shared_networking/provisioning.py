@@ -128,7 +128,16 @@ def provision(db, tls_mgr, broker_host: str = "127.0.0.1",
 
 def _create_admin_account(db, admin_username: str = None,
                           admin_password: str = None) -> tuple:
-    """Prompt for or accept the initial admin credentials.
+    """Prompt for or accept the initial app_admin credentials.
+
+    Creates the first administrator account with role 'app_admin'
+    (APPLICATION scope, hospital_id = NULL) — the correct role for
+    Phase 4+.
+
+    Backward compatibility: existing installations (where M002 has
+    already migrated 'admin' users to 'app_admin') are unaffected.
+    This function is only called when is_first_run() is True, which
+    means no users exist yet.
 
     No default credentials are created. Public registration is
     permanently disabled — only this first admin account is created
@@ -165,9 +174,19 @@ def _create_admin_account(db, admin_username: str = None,
                 continue
             break
 
-    ok, err = db.create_user(username, password, "admin")
+    # Use create_full_user so the account gets role=app_admin (APPLICATION scope)
+    # and hospital_id=NULL (not bound to any hospital).
+    # This is consistent with Phase 4 architecture — no sentinel hospital.
+    ok, err = db.create_full_user(
+        username=username,
+        password=password,
+        role="app_admin",
+        hospital_id=None,
+        first_name="System",
+        employee_id="00001",
+    )
     if not ok:
         return False, err
 
-    log.info(f"[PROVISION] Initial admin account created: {username}")
+    log.info(f"[PROVISION] Initial app_admin account created: {username}")
     return True, ""

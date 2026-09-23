@@ -1,5 +1,5 @@
 # ═══════════════════════════════════════════════════════════════════
-#  AETHER CONSOLE — AUTHENTICATION MODULE (v2 — SQLite-backed)
+#  AETHER CONSOLE — AUTHENTICATION MODULE (v3 — Phase 3 RBAC)
 #  Provides the AuthManager interface consumed by the Login Dialog
 #  and all application entry points.
 #
@@ -11,9 +11,12 @@
 #    - The role returned by verify() is ALWAYS from the database.
 #      The client MUST NOT be trusted to claim its own role.
 #    - Sessions have a server-side expiration time.
-#    - create_session() stores the session in the DB.
-#    - validate_session() reads authoritative role from the DB.
+#    - create_session() stores the session in the DB with hospital_id
+#      derived from the user's DB record (never from client).
+#    - validate_session() reads authoritative role AND hospital_id
+#      from the DB. Returns 4-tuple (valid, username, role, hospital_id).
 #    - Plaintext passwords are never stored or logged.
+#    - Authorization is delegated to AuthorizationService (Phase 3).
 # ═══════════════════════════════════════════════════════════════════
 
 import logging
@@ -41,6 +44,15 @@ class AuthManager:
     def __init__(self):
         self._db = AetherDatabase.instance()
 
+    @property
+    def db(self) -> AetherDatabase:
+        """Return the underlying AetherDatabase instance."""
+        return self._db
+
+    @db.setter
+    def db(self, value: AetherDatabase):
+        self._db = value
+
     # ─── Public API ───────────────────────────────────────────────
 
     def verify(self, username: str, password: str) -> Tuple[bool, str]:
@@ -56,19 +68,15 @@ class AuthManager:
         return self._db.verify_user(username, password)
 
     def change_password(self, username: str, current_password: str,
-                        new_password: str,
-                        requesting_role: str = "") -> Tuple[bool, str]:
+                        new_password: str) -> Tuple[bool, str]:
         """Change a user's own password.
 
-        Only an admin may call this; only their own password can be
-        changed (user cannot change another user's password here).
+        Authorization for who may call this method should be enforced
+        by the caller via AuthorizationService. This method only
+        verifies the current password before accepting the change.
 
         Returns (True, message) or (False, error_message).
         """
-        if requesting_role and requesting_role != "admin":
-            log.warning("[AUTH] Password change denied — non-admin role")
-            return False, "Only administrators can change passwords."
-
         return self._db.change_password(username, current_password,
                                         new_password)
 
@@ -80,6 +88,9 @@ class AuthManager:
         ignored — the authoritative role is always fetched from the DB.
         The device_id associates the session with a registered device.
 
+        The session's hospital_id is populated from the user's DB record
+        — NEVER from client input.
+
         Returns a secure session token string.
         """
         # Always use DB-authoritative role, ignore client-provided role
@@ -88,15 +99,15 @@ class AuthManager:
         return self._db.create_session(username, role, device_id=device_id)
 
     def validate_session(self, session_id: str,
-                         device_id: Optional[str] = None) -> Tuple[bool, str, str]:
+                         device_id: Optional[str] = None):
         """Validate a session token.
 
         Returns:
-            (True, username, authoritative_role) if valid
-            (False, '', '') if invalid or expired
+            (True, username, authoritative_role, hospital_id) if valid
+            (False, '', '', None) if invalid or expired
 
-        The returned role is ALWAYS from the database — never from the
-        session data the client provided.
+        The returned role and hospital_id are ALWAYS from the database —
+        never from the session data the client provided.
 
         If device_id is provided, the session must have been created on
         that device (session/device binding). See AetherDatabase.validate_session

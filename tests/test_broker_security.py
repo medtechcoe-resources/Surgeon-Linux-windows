@@ -97,7 +97,7 @@ class TestBrokerSecurity:
 
         # Create session in DB
         token = db.create_session("surgeon", "user")
-        valid, _, _ = db.validate_session(token)
+        valid, *_ = db.validate_session(token)
         assert valid is True
 
         # Simulate client connecting and disconnecting
@@ -113,7 +113,7 @@ class TestBrokerSecurity:
         broker._remove_client(client)
 
         # Verify session is STILL VALID in database for reconnect
-        valid, username, role = db.validate_session(token)
+        valid, username, role, *_ = db.validate_session(token)
         assert valid is True
         assert username == "surgeon"
         assert role == "user"
@@ -126,7 +126,7 @@ class TestBrokerSecurity:
         broker, db, _ = test_broker
 
         token = db.create_session("surgeon", "user")
-        valid, _, _ = db.validate_session(token)
+        valid, *_ = db.validate_session(token)
         assert valid is True
 
         s1, s2 = socket.socketpair()
@@ -134,7 +134,6 @@ class TestBrokerSecurity:
         client.username = "surgeon"
         client.session_id = token
         client.authenticated = True
-
         broker._clients[s1.fileno()] = client
 
         # Handle explicit logout
@@ -142,7 +141,7 @@ class TestBrokerSecurity:
         broker._handle_logout(client, logout_msg)
 
         # Verify session is now INVALID in database
-        valid, _, _ = db.validate_session(token)
+        valid, *_ = db.validate_session(token)
         assert valid is False
 
         s1.close()

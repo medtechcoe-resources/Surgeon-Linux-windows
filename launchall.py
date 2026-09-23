@@ -14,6 +14,7 @@ import time
 import signal
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+PROJECT_PYTHON = os.path.join(PROJECT_ROOT, ".venv", "bin", "python")
 
 
 def main():
@@ -47,7 +48,7 @@ def main():
         # 1. Start Broker
         print("\n  [1/5] Starting Pub-Sub Broker...")
         broker = subprocess.Popen(
-            [sys.executable, os.path.join(PROJECT_ROOT, "broker.py")],
+            [PROJECT_PYTHON, os.path.join(PROJECT_ROOT, "broker.py")],
             cwd=PROJECT_ROOT,
         )
         processes.append(("Broker", broker))
@@ -56,7 +57,7 @@ def main():
         # 2. Start Data Generator
         print("  [2/5] Starting Data Generator Backend...")
         datagen = subprocess.Popen(
-            [sys.executable, os.path.join(
+            [PROJECT_PYTHON, os.path.join(
                 PROJECT_ROOT, "Data-Generator", "main.py")],
             cwd=os.path.join(PROJECT_ROOT, "Data-Generator"),
         )
@@ -66,7 +67,7 @@ def main():
         # 3. Start Surgeon Console
         print("  [3/5] Starting Surgeon Console...")
         surgeon = subprocess.Popen(
-            [sys.executable, os.path.join(PROJECT_ROOT, "main.py")],
+            [PROJECT_PYTHON, os.path.join(PROJECT_ROOT, "main.py")],
             cwd=PROJECT_ROOT,
         )
         processes.append(("Surgeon Console", surgeon))
@@ -75,7 +76,7 @@ def main():
         # 4. Start Robot Console
         print("  [4/5] Starting Robot Console...")
         robot = subprocess.Popen(
-            [sys.executable, os.path.join(
+            [PROJECT_PYTHON, os.path.join(
                 PROJECT_ROOT, "Robot-Console", "main.py")],
             cwd=os.path.join(PROJECT_ROOT, "Robot-Console"),
         )
@@ -85,7 +86,7 @@ def main():
         # 5. Start Observer Screen
         print("  [5/5] Starting Observer Screen...")
         observer = subprocess.Popen(
-            [sys.executable, os.path.join(
+            [PROJECT_PYTHON, os.path.join(
                 PROJECT_ROOT, "Observer-Screen", "main.py")],
             cwd=os.path.join(PROJECT_ROOT, "Observer-Screen"),
         )

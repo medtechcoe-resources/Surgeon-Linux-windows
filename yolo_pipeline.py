@@ -14,8 +14,8 @@ import logging
 
 log = logging.getLogger(__name__)
 
-from PyQt6.QtCore import QObject, pyqtSignal, QTimer, Qt
-from PyQt6.QtGui import QImage, QPainter, QColor, QPen, QFont
+from PyQt6.QtCore import QObject, pyqtSignal, QTimer, Qt, QPointF
+from PyQt6.QtGui import QImage, QPainter, QColor, QPen, QFont, QPolygonF
 
 # Optional dependencies — graceful degradation
 try:
@@ -34,9 +34,9 @@ except ImportError:
 
 class DetectionResult:
     """Single detection bounding box."""
-    __slots__ = ("class_name", "confidence", "x1", "y1", "x2", "y2", "track_id")
+    __slots__ = ("class_name", "confidence", "x1", "y1", "x2", "y2", "track_id", "mask")
 
-    def __init__(self, class_name, confidence, x1, y1, x2, y2, track_id=None):
+    def __init__(self, class_name, confidence, x1, y1, x2, y2, track_id=None, mask=None):
         self.class_name = class_name
         self.confidence = confidence
         self.x1 = int(x1)
@@ -44,6 +44,7 @@ class DetectionResult:
         self.x2 = int(x2)
         self.y2 = int(y2)
         self.track_id = track_id
+        self.mask = mask
 
 
 class DetectionStats:
@@ -130,7 +131,7 @@ class YoloInferenceWorker:
 
                 if model is not None:
                     if tracking_enabled:
-                        results = model.track(frame_bgr, persist=True, verbose=False)
+                        results = model.track(frame_bgr, persist=True, tracker="bytetrack.yaml", imgsz=512, conf=0.25, device=0, verbose=False)
                     else:
                         results = model(frame_bgr, verbose=False)
 
@@ -140,14 +141,21 @@ class YoloInferenceWorker:
                         result = results[0]
                         boxes = result.boxes
                         if boxes is not None and len(boxes) > 0:
-                            for box in boxes:
+                            masks_xy = result.masks.xy if result.masks is not None else []
+
+                            for idx, box in enumerate(boxes):
                                 cls_id = int(box.cls[0])
                                 conf = float(box.conf[0])
                                 x1, y1, x2, y2 = box.xyxy[0].tolist()
                                 class_name = model.names.get(cls_id, f"class_{cls_id}")
                                 track_id = int(box.id[0]) if box.id is not None else None
+
+                                mask = None
+                                if idx < len(masks_xy):
+                                    mask = masks_xy[idx].copy()
+
                                 detections.append(DetectionResult(
-                                    class_name, conf, x1, y1, x2, y2, track_id
+                                    class_name, conf, x1, y1, x2, y2, track_id, mask
                                 ))
 
                     stats.objects_detected = len(detections)
@@ -225,7 +233,7 @@ class YoloPipeline(QObject):
 
     # ── Model Management ──────────────────────────────────────────
 
-    def load_model(self, model_name="yolov8x.pt"):
+    def load_model(self, model_name="models/surgical/best.pt"):
         """Load YOLO model in background thread and initialize inference worker."""
         if self._model or self._model_loading:
             return
@@ -483,31 +491,56 @@ class YoloPipeline(QObject):
         # Make copy of raw_qimg for local display with overlays
         display_qimg = raw_qimg.copy() if detections else raw_qimg
 
-        # Draw detections overlay locally if enabled
+        # Draw detections and segmentation masks locally if enabled
         if detections:
             painter = QPainter(display_qimg)
             painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
             for det in detections:
                 color = QColor("#20C997")
+
+                # Draw segmentation mask
+                if det.mask is not None and len(det.mask) >= 3:
+                    polygon = QPolygonF(
+                        [QPointF(float(point[0]), float(point[1])) for point in det.mask]
+                    )
+                    painter.setPen(Qt.PenStyle.NoPen)
+                    painter.setBrush(QColor(32, 201, 151, 70))
+                    painter.drawPolygon(polygon)
+
+                # Draw bounding box
                 pen = QPen(color, 2)
                 painter.setPen(pen)
-                painter.setBrush(QColor(0, 0, 0, 0))
-                painter.drawRect(int(det.x1), int(det.y1), int(det.x2 - det.x1), int(det.y2 - det.y1))
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawRect(
+                    int(det.x1),
+                    int(det.y1),
+                    int(det.x2 - det.x1),
+                    int(det.y2 - det.y1)
+                )
 
                 # Label background
                 label_text = f"{det.class_name.upper()} {det.confidence:.0%}"
                 if det.track_id is not None:
                     label_text = f"ID-{det.track_id:03d} {label_text}"
+
                 font = QFont("Inter", 10, QFont.Weight.Bold)
                 painter.setFont(font)
                 fm = painter.fontMetrics()
                 tw = fm.horizontalAdvance(label_text) + 12
                 th = fm.height() + 6
+
                 painter.setBrush(color)
                 painter.setPen(Qt.PenStyle.NoPen)
                 painter.drawRect(int(det.x1), int(det.y1) - th, tw, th)
+
                 painter.setPen(QColor("#0D1117"))
-                painter.drawText(int(det.x1) + 6, int(det.y1) - 4, label_text)
+                painter.drawText(
+                    int(det.x1) + 6,
+                    int(det.y1) - 4,
+                    label_text
+                )
+
             painter.end()
 
         self.frame_ready.emit(display_qimg)
@@ -558,31 +591,56 @@ class YoloPipeline(QObject):
         # Make copy of qimage for drawing overlays if needed
         out_img = qimage.copy()
 
-        # Draw detections overlay
+        # Draw detections and segmentation masks
         if detections:
             painter = QPainter(out_img)
             painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
             for det in detections:
                 color = QColor("#20C997")
+
+                # Draw segmentation mask
+                if det.mask is not None and len(det.mask) >= 3:
+                    polygon = QPolygonF(
+                        [QPointF(float(point[0]), float(point[1])) for point in det.mask]
+                    )
+                    painter.setPen(Qt.PenStyle.NoPen)
+                    painter.setBrush(QColor(32, 201, 151, 70))
+                    painter.drawPolygon(polygon)
+
+                # Draw bounding box
                 pen = QPen(color, 2)
                 painter.setPen(pen)
-                painter.setBrush(QColor(0, 0, 0, 0))
-                painter.drawRect(int(det.x1), int(det.y1), int(det.x2 - det.x1), int(det.y2 - det.y1))
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawRect(
+                    int(det.x1),
+                    int(det.y1),
+                    int(det.x2 - det.x1),
+                    int(det.y2 - det.y1)
+                )
 
                 # Label background
                 label_text = f"{det.class_name.upper()} {det.confidence:.0%}"
                 if det.track_id is not None:
                     label_text = f"ID-{det.track_id:03d} {label_text}"
+
                 font = QFont("Inter", 10, QFont.Weight.Bold)
                 painter.setFont(font)
                 fm = painter.fontMetrics()
                 tw = fm.horizontalAdvance(label_text) + 12
                 th = fm.height() + 6
+
                 painter.setBrush(color)
                 painter.setPen(Qt.PenStyle.NoPen)
                 painter.drawRect(int(det.x1), int(det.y1) - th, tw, th)
+
                 painter.setPen(QColor("#0D1117"))
-                painter.drawText(int(det.x1) + 6, int(det.y1) - 4, label_text)
+                painter.drawText(
+                    int(det.x1) + 6,
+                    int(det.y1) - 4,
+                    label_text
+                )
+
             painter.end()
 
         self.frame_ready.emit(out_img)
@@ -592,8 +650,14 @@ class YoloPipeline(QObject):
 
     def set_detection(self, enabled):
         self._detection_enabled = enabled
-        if enabled and not self._model:
-            self.load_model()
+
+        if enabled:
+            if not self._model:
+                self.load_model()
+            else:
+                # If YOLO is enabled after a network broadcast is already
+                # running, make sure the background inference worker is alive.
+                self._worker.start()
 
     def set_tracking(self, enabled):
         self._tracking_enabled = enabled

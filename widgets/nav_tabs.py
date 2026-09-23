@@ -75,6 +75,18 @@ def _draw_signal(p, cx, cy, c):
     p.drawEllipse(int(cx - 2), int(cy - 6), 4, 4)
 
 
+def _draw_users(p, cx, cy, c):
+    """User Management: users / profile silhouettes."""
+    p.setPen(QPen(c, 1.5))
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    # Primary user (center-left)
+    p.drawEllipse(int(cx - 5), int(cy - 8), 6, 6)
+    p.drawArc(int(cx - 9), int(cy - 1), 14, 14, 0 * 16, 180 * 16)
+    # Secondary user (back-right)
+    p.drawEllipse(int(cx + 2), int(cy - 7), 5, 5)
+    p.drawArc(int(cx - 1), int(cy), 12, 12, 20 * 16, 140 * 16)
+
+
 # ─── Icon Tab Button ────────────────────────────────────────────────────────
 
 class _IconTabButton(QPushButton):
@@ -88,6 +100,7 @@ class _IconTabButton(QPushButton):
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self._icon_fn = icon_fn
         self._label = label
+        self._index = index
         self._active = False
         self._hover = False
 
@@ -186,19 +199,36 @@ class NavBar(QWidget):
         self.setObjectName("NavBar")
         self.setFixedHeight(44)
 
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(24, 0, 24, 0)
-        layout.setSpacing(12)
+        self._layout = QHBoxLayout(self)
+        self._layout.setContentsMargins(24, 0, 24, 0)
+        self._layout.setSpacing(12)
 
         self.buttons: list[_IconTabButton] = []
         for i, (name, icon_fn) in enumerate(self.TABS):
             btn = _IconTabButton(icon_fn, name, i)
             btn.clicked.connect(lambda checked, idx=i: self.set_active(idx))
-            layout.addWidget(btn)
+            self._layout.addWidget(btn)
             self.buttons.append(btn)
-        layout.addStretch()
+        self._layout.addStretch()
 
         self.set_active(0)
+
+    def add_tab(self, name: str, icon_fn) -> int:
+        """Dynamically append a tab before the stretch.
+
+        Idempotent: if a tab with the same label already exists, returns its index.
+        """
+        for btn in self.buttons:
+            if btn._label == name:
+                return btn._index
+
+        idx = len(self.buttons)
+        btn = _IconTabButton(icon_fn, name, idx)
+        btn.clicked.connect(lambda checked, i=idx: self.set_active(i))
+        # Insert before the stretch item (which is at layout index idx)
+        self._layout.insertWidget(idx, btn)
+        self.buttons.append(btn)
+        return idx
 
     def set_active(self, idx: int):
         for i, btn in enumerate(self.buttons):

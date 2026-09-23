@@ -44,3 +44,7 @@ Thumbs.db
 shared_networking/__pycache__/
 Observer-Screen/__pycache__/
 Observer-Screen/ui/__pycache__/
+
+# ─── Session Exports ─────────────────────────────────────────────
+exports/
+

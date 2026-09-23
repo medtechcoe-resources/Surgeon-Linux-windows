@@ -91,11 +91,11 @@ class PatientVitalsGenerator(QObject):
         )
         spo2 = max(80.0, spo2)
 
-        # Blood Pressure  systolic 110–130, diastolic 70–82
+        # Blood Pressure  systolic 110–130, diastolic 70–82 (preserve systolic > diastolic)
         bp_sys = int(118 + 8 * math.sin(t * 0.2) + random.gauss(0, 2))
         bp_dia = int(74 + 4 * math.sin(t * 0.25) + random.gauss(0, 1))
-        bp_sys = max(60, min(250, bp_sys))
-        bp_dia = max(40, min(150, bp_dia))
+        bp_dia = max(40, min(140, bp_dia))
+        bp_sys = max(bp_dia + 20, min(250, bp_sys))
         blood_pressure = f"{bp_sys}/{bp_dia}"
 
         # Respiration Rate  14–20 br/min
@@ -114,18 +114,20 @@ class PatientVitalsGenerator(QObject):
         etco2 = round(38.0 + 3.0 * math.sin(t * 0.08) + random.gauss(0, 0.5), 1)
         etco2 = max(20.0, min(60.0, etco2))
 
-        # ECG status — mostly normal, occasional minor artefact
+        # ECG status — mostly normal, occasional minor artefact / PAC
         ecg_roll = random.random()
-        if ecg_roll < 0.01:
-            ecg_status = "PAC DETECTED"
-        elif ecg_roll < 0.005:
+        if ecg_roll < 0.008:
             ecg_status = "ARTEFACT"
+        elif ecg_roll < 0.02:
+            ecg_status = "PAC DETECTED"
         else:
             ecg_status = "NORMAL SINUS"
 
         vitals = {
             "heart_rate":     hr,
             "spo2":           spo2,
+            "systolic_bp":    bp_sys,
+            "diastolic_bp":   bp_dia,
             "blood_pressure": blood_pressure,
             "respiration":    rr,
             "temperature":    temp,

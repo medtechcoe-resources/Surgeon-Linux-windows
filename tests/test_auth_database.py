@@ -70,18 +70,18 @@ class TestDatabaseAndAuth:
         assert len(token) > 20
 
         # Validate with matching device
-        valid, username, role = db.validate_session(token, device_id="surgeon_console")
+        valid, username, role, *_ = db.validate_session(token, device_id="surgeon_console")
         assert valid is True
         assert username == "surgeon_user"
         assert role == "user"
 
         # Validate with wrong device when device-bound
-        valid, _, _ = db.validate_session(token, device_id="observer_screen")
+        valid, *_ = db.validate_session(token, device_id="observer_screen")
         assert valid is False
 
         # Invalidate session (logout)
         db.invalidate_session(token)
-        valid, _, _ = db.validate_session(token, device_id="surgeon_console")
+        valid, *_ = db.validate_session(token, device_id="surgeon_console")
         assert valid is False
 
     def test_acl_reconciliation_on_conflict(self, temp_db):
