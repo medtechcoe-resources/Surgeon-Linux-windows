@@ -64,3 +64,6 @@ models/speech/whisper-tiny-indian-accent/
 
 # ─── Whisper Development Backups ────────────────────────────────
 *.whisper_before_*
+
+# Local Python virtual environments
+Data-Generator/.venv/
