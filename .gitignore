@@ -48,3 +48,5 @@ Observer-Screen/ui/__pycache__/
 # ─── Session Exports ─────────────────────────────────────────────
 exports/
 
+.venv/
+.venv/

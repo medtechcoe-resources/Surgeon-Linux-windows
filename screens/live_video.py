@@ -13,6 +13,7 @@ Right panel upper: Compact action cards + Detection metric summary cards
 Right panel lower: Foot pedal controls (flat, no emojis) + Message center
 """
 import math
+from pathlib import Path
 import os
 import sys
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QLabel,
@@ -1374,6 +1375,10 @@ class _LiveVideoLocalSidebar(PatientSidebar):
 
 
 class LiveVideoScreen(QWidget):
+    dictation_partial_signal = pyqtSignal(str)
+    dictation_final_signal = pyqtSignal(object)
+    dictation_error_signal = pyqtSignal(str)
+
     ZOOM_MIN = 1.0
     ZOOM_MAX = 3.0
     ZOOM_STEP = 0.2
@@ -1423,6 +1428,30 @@ class LiveVideoScreen(QWidget):
         self.recorder.export_started.connect(self._on_export_started)
         self.recorder.export_finished.connect(self._on_export_finished)
         self.recorder.export_failed.connect(self._on_export_failed)
+
+        # ============================================================
+        # SURGEON DICTATION
+        # ============================================================
+        self._dictation_manager = None
+        self._dictation_segments = []
+        self._dictation_pdf_path = None
+        self._dictation_elapsed = 0.0
+        self._dictation_model_path = str(
+            Path(__file__).resolve().parent.parent
+            / "models"
+            / "speech"
+            / "vosk-model-small-en-us-0.15"
+        )
+
+        self.dictation_partial_signal.connect(
+            self._on_dictation_partial
+        )
+        self.dictation_final_signal.connect(
+            self._on_dictation_final
+        )
+        self.dictation_error_signal.connect(
+            self._on_dictation_error
+        )
 
         # ============================================================
         # LOCAL LIVE VIDEO SIDEBAR
@@ -2007,6 +2036,64 @@ class LiveVideoScreen(QWidget):
 
         right.addWidget(pedal_card)
 
+        # ============================================================
+        # SURGEON DICTATION
+        # ============================================================
+        dictation_card = QFrame()
+        dictation_card.setObjectName("DictationCard")
+        dictation_card.setMinimumHeight(230)
+
+        dictation_lay = QVBoxLayout(dictation_card)
+        dictation_lay.setContentsMargins(12, 10, 12, 10)
+        dictation_lay.setSpacing(7)
+
+        dictation_title = QLabel("SURGEON DICTATION")
+        dictation_title.setObjectName("DictationTitle")
+        dictation_lay.addWidget(dictation_title)
+
+        self.dictation_status = QLabel("READY")
+        self.dictation_status.setObjectName("DictationStatus")
+        dictation_lay.addWidget(self.dictation_status)
+
+        self.dictation_transcript = QLabel("Dictation transcript will appear here.")
+        self.dictation_transcript.setObjectName("DictationTranscript")
+        self.dictation_transcript.setWordWrap(True)
+        self.dictation_transcript.setAlignment(
+            Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft
+        )
+        self.dictation_transcript.setMinimumHeight(70)
+        self.dictation_transcript.setMaximumHeight(100)
+        dictation_lay.addWidget(self.dictation_transcript)
+
+        dictation_buttons_1 = QHBoxLayout()
+        dictation_buttons_1.setSpacing(6)
+
+        self.btn_dictation_start = QPushButton("START")
+        self.btn_dictation_pause = QPushButton("PAUSE")
+        self.btn_dictation_resume = QPushButton("RESUME")
+
+        self.btn_dictation_start.setProperty("class", "FlatPedal")
+        self.btn_dictation_pause.setProperty("class", "FlatPedal")
+        self.btn_dictation_resume.setProperty("class", "FlatPedal")
+
+        self.btn_dictation_start.clicked.connect(self._start_dictation)
+        self.btn_dictation_pause.clicked.connect(self._pause_dictation)
+        self.btn_dictation_resume.clicked.connect(self._resume_dictation)
+
+        dictation_buttons_1.addWidget(self.btn_dictation_start)
+        dictation_buttons_1.addWidget(self.btn_dictation_pause)
+        dictation_buttons_1.addWidget(self.btn_dictation_resume)
+
+        dictation_lay.addLayout(dictation_buttons_1)
+
+        self.btn_dictation_stop = QPushButton("STOP & SAVE PDF")
+        self.btn_dictation_stop.setProperty("class", "FlatPedalCoag")
+        self.btn_dictation_stop.clicked.connect(self._stop_dictation)
+
+        dictation_lay.addWidget(self.btn_dictation_stop)
+
+        right.addWidget(dictation_card)
+
         # ── Message Center ──
         self.message_center = _MessageCenter()
         self.message_center.setMinimumHeight(160)
@@ -2041,6 +2128,204 @@ class LiveVideoScreen(QWidget):
         self._rec_timer = QTimer(self)
         self._rec_timer.timeout.connect(self._blink_rec)
         self._rec_timer.start(800)
+
+    # ============================================================
+    # SURGEON DICTATION CONTROL
+    # ============================================================
+
+    def _start_dictation(self):
+        if self._dictation_manager is not None:
+            if self._dictation_manager.is_running:
+                return
+
+        try:
+            from speech.dictation_manager import DictationManager
+
+            self._dictation_manager = DictationManager(
+                self._dictation_model_path,
+                on_partial=lambda text: self.dictation_partial_signal.emit(text),
+                on_final=lambda segment: self.dictation_final_signal.emit(segment),
+                on_error=lambda message: self.dictation_error_signal.emit(message),
+            )
+
+            if not self._dictation_manager.start():
+                self.dictation_status.setText("MICROPHONE UNAVAILABLE")
+                return
+
+            self._dictation_segments = []
+            self._dictation_pdf_path = None
+            self._dictation_elapsed = 0.0
+
+            self.dictation_status.setText("● LISTENING")
+            self.dictation_transcript.setText(
+                "Listening... speak clearly."
+            )
+
+            self.btn_dictation_start.setEnabled(False)
+            self.btn_dictation_pause.setEnabled(True)
+            self.btn_dictation_resume.setEnabled(False)
+            self.btn_dictation_stop.setEnabled(True)
+
+        except Exception as exc:
+            self.dictation_status.setText("DICTATION ERROR")
+            QMessageBox.warning(
+                self,
+                "Surgeon Dictation",
+                f"Unable to start dictation:\n{exc}",
+            )
+
+    def _pause_dictation(self):
+        if self._dictation_manager is None:
+            return
+
+        if not self._dictation_manager.is_running:
+            return
+
+        self._dictation_manager.pause()
+
+        self.dictation_status.setText("Ⅱ PAUSED")
+        self.btn_dictation_pause.setEnabled(False)
+        self.btn_dictation_resume.setEnabled(True)
+
+    def _resume_dictation(self):
+        if self._dictation_manager is None:
+            return
+
+        if not self._dictation_manager.is_running:
+            return
+
+        try:
+            if not self._dictation_manager.resume():
+                self.dictation_status.setText(
+                    "MICROPHONE UNAVAILABLE"
+                )
+                return
+
+            self.dictation_status.setText("● LISTENING")
+            self.btn_dictation_pause.setEnabled(True)
+            self.btn_dictation_resume.setEnabled(False)
+
+        except Exception as exc:
+            self.dictation_status.setText("DICTATION ERROR")
+            self.dictation_error_signal.emit(str(exc))
+
+    def _stop_dictation(self):
+        if self._dictation_manager is None:
+            return
+
+        if not self._dictation_manager.is_running:
+            return
+
+        try:
+            self._dictation_manager.stop()
+
+            self._dictation_segments = (
+                self._dictation_manager.get_segments()
+            )
+            self._dictation_elapsed = (
+                self._dictation_manager.get_elapsed_seconds()
+            )
+
+            from speech.dictation_pdf import DictationPDF
+            from datetime import datetime
+
+            if self._session_active and self._session_id:
+                output_dir = (
+                    Path(__file__).resolve().parent.parent
+                    / "exports"
+                    / "sessions"
+                    / self._session_id
+                )
+            else:
+                output_dir = (
+                    Path(__file__).resolve().parent.parent
+                    / "exports"
+                    / "dictation"
+                )
+
+            timestamp = datetime.now().strftime(
+                "%Y%m%d_%H%M%S"
+            )
+
+            pdf_path = output_dir / (
+                f"AETHER_Dictation_{timestamp}.pdf"
+            )
+
+            self._dictation_pdf_path = DictationPDF().generate(
+                str(pdf_path),
+                self._dictation_segments,
+                self._dictation_elapsed,
+            )
+
+            self.dictation_status.setText("PDF SAVED")
+            self.dictation_transcript.setText(
+                f"{len(self._dictation_segments)} dictation entries recorded.\n"
+                f"PDF: {self._dictation_pdf_path}"
+            )
+
+            self.btn_dictation_start.setEnabled(True)
+            self.btn_dictation_pause.setEnabled(False)
+            self.btn_dictation_resume.setEnabled(False)
+            self.btn_dictation_stop.setEnabled(False)
+
+            QMessageBox.information(
+                self,
+                "Surgeon Dictation",
+                f"Dictation PDF saved successfully.\n\n"
+                f"{self._dictation_pdf_path}",
+            )
+
+        except Exception as exc:
+            self.dictation_status.setText("PDF EXPORT ERROR")
+            QMessageBox.warning(
+                self,
+                "Surgeon Dictation",
+                f"Unable to save dictation PDF:\n{exc}",
+            )
+
+    def _on_dictation_partial(self, text):
+        if not text:
+            return
+
+        current = "\n".join(
+            segment.text
+            for segment in self._dictation_segments[-4:]
+        )
+
+        if current:
+            current += "\n"
+
+        self.dictation_transcript.setText(
+            current + "[...] " + text
+        )
+
+    def _on_dictation_final(self, segment):
+        self._dictation_segments = (
+            self._dictation_manager.get_segments()
+            if self._dictation_manager
+            else self._dictation_segments
+        )
+
+        lines = []
+        for item in self._dictation_segments[-5:]:
+            lines.append(
+                f"[{item.elapsed_seconds:05.1f}s] {item.text}"
+            )
+
+        self.dictation_transcript.setText(
+            "\n".join(lines)
+            if lines
+            else "Listening..."
+        )
+
+    def _on_dictation_error(self, message):
+        self.dictation_status.setText(
+            "MICROPHONE ERROR"
+        )
+
+        self.dictation_transcript.setText(
+            f"Microphone error: {message}"
+        )
 
     # ── Resize: reposition floating overlays ──────────────────────────
 
