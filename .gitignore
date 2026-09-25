@@ -49,4 +49,18 @@ Observer-Screen/ui/__pycache__/
 exports/
 
 .venv/
-.venv/
+
+# ─── Local ML / Speech Environments ─────────────────────────────
+whisper_env/
+
+# ─── Local ML Model Weights ─────────────────────────────────────
+models/speech/whisper-small/
+models/speech/whisper-small-indian-english/
+models/speech/whisper-tiny-indian-accent/
+
+# ─── Development Backup Files ──────────────────────────────────
+*.before_*
+*.vosk_backup
+
+# ─── Whisper Development Backups ────────────────────────────────
+*.whisper_before_*

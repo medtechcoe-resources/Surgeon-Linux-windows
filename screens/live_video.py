@@ -1440,7 +1440,7 @@ class LiveVideoScreen(QWidget):
             Path(__file__).resolve().parent.parent
             / "models"
             / "speech"
-            / "vosk-model-small-en-us-0.15"
+            / "whisper-small"
         )
 
         self.dictation_partial_signal.connect(
