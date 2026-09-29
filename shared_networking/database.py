@@ -414,6 +414,13 @@ class AetherDatabase:
             ("admin", "system_control",     1, 1),
             ("admin", "robot_status",       1, 1),
 
+            # ── app_admin: subscribe to application data streams ─────
+            ("app_admin", "patient_vitals",     0, 1),
+            ("app_admin", "robot_telemetry",    0, 1),
+            ("app_admin", "alerts",             0, 1),
+            ("app_admin", "connection_status",  0, 1),
+            ("app_admin", "system_status",      0, 1),
+
             # ── user (surgeon): subscribe to data, publish control ─
             ("user", "patient_vitals",      0, 1),
             ("user", "robot_telemetry",     0, 1),

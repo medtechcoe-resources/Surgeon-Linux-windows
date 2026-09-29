@@ -32,6 +32,7 @@ from recording.session_recorder import (
 )
 from widgets.patient_sidebar import PatientSidebar, SidebarCard, hline
 from input.joystick_controller import JoystickController
+from speech.voice_command_listener import VoiceCommandListener
 
 
 INSTRUMENT_COLORS = {1: "#0095FF", 2: "#10B981", 3: "#8B5CF6", 4: "#F59E0B"}
@@ -250,6 +251,16 @@ class _FullscreenVideoViewer(QWidget):
         self.canvas.setStyleSheet("background-color: #000000;")
         layout.addWidget(self.canvas, 1)
 
+        # Dictation overlay for fullscreen Assisted View.
+        self.dictation_overlay = _DictationOverlay(parent=self.canvas)
+        self.dictation_overlay.setGeometry(
+            10,
+            10,
+            600,
+            180,
+        )
+        self.dictation_overlay.raise_()
+
         self.exit_button = QPushButton("EXIT FULLSCREEN")
         self.exit_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.exit_button.setFixedHeight(42)
@@ -276,6 +287,38 @@ class _FullscreenVideoViewer(QWidget):
         if qimage is None or qimage.isNull():
             return
         self.canvas.set_frame(qimage)
+
+    def set_dictation(self, status, text):
+        """Update the fullscreen dictation overlay."""
+        if hasattr(self, "dictation_overlay"):
+            self.dictation_overlay.set_status(status)
+            self.dictation_overlay.set_text(text)
+
+    def clear_dictation(self):
+        """Hide fullscreen dictation overlay."""
+        if hasattr(self, "dictation_overlay"):
+            self.dictation_overlay.clear()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+
+        if hasattr(self, "dictation_overlay"):
+            canvas_width = self.canvas.width()
+            canvas_height = self.canvas.height()
+
+            overlay_width = min(
+                max(440, int(canvas_width * 0.40)),
+                max(440, canvas_width - 20),
+            )
+            overlay_height = 180
+
+            self.dictation_overlay.setGeometry(
+                max(10, canvas_width - overlay_width - 10),
+                max(10, canvas_height - overlay_height - 10),
+                overlay_width,
+                overlay_height,
+            )
+            self.dictation_overlay.raise_()
 
     def set_pixmap(self, pixmap):
         """Display an existing rendered pixmap without processing it."""
@@ -1374,7 +1417,67 @@ class _LiveVideoLocalSidebar(PatientSidebar):
         layout.addStretch()
 
 
+class _DictationOverlay(QFrame):
+    """Compact dictation overlay displayed on top of the Assisted View."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+
+        self.setObjectName("DictationOverlay")
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setStyleSheet("""
+            QFrame#DictationOverlay {
+                background-color: rgba(0, 0, 0, 210);
+                border: 2px solid rgba(0, 180, 216, 190);
+                border-radius: 10px;
+            }
+            QLabel#DictationOverlayTitle {
+                color: #00D9FF;
+                font-size: 14px;
+                font-weight: 700;
+                padding: 0px;
+            }
+            QLabel#DictationOverlayText {
+                color: #FFFFFF;
+                font-size: 15px;
+                font-weight: 600;
+                padding: 0px;
+            }
+        """)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 12, 16, 12)
+        layout.setSpacing(7)
+
+        self.title_label = QLabel("● DICTATION")
+        self.title_label.setObjectName("DictationOverlayTitle")
+
+        self.text_label = QLabel("")
+        self.text_label.setObjectName("DictationOverlayText")
+        self.text_label.setWordWrap(True)
+        self.text_label.setAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
+        )
+
+        layout.addWidget(self.title_label)
+        layout.addWidget(self.text_label)
+
+        self.setVisible(False)
+
+    def set_text(self, text):
+        self.text_label.setText(str(text).strip())
+        self.setVisible(bool(str(text).strip()))
+
+    def set_status(self, status):
+        self.title_label.setText(f"● {status}")
+
+    def clear(self):
+        self.text_label.clear()
+        self.setVisible(False)
+
+
 class LiveVideoScreen(QWidget):
+    voice_command_signal = pyqtSignal(str)
     dictation_partial_signal = pyqtSignal(str)
     dictation_final_signal = pyqtSignal(object)
     dictation_error_signal = pyqtSignal(str)
@@ -1452,6 +1555,24 @@ class LiveVideoScreen(QWidget):
         self.dictation_error_signal.connect(
             self._on_dictation_error
         )
+
+        # ============================================================
+        # AETHER VOICE COMMANDS
+        # CPU-only Vosk listener for:
+        #   Start Aether
+        #   Pause Aether
+        #   Resume Aether
+        #   Stop Aether
+        # ============================================================
+        self._voice_command_listener = VoiceCommandListener(
+            model_path="models/speech/vosk-model-small-en-us-0.15",
+            on_command=lambda command: self.voice_command_signal.emit(command)
+        )
+        self.voice_command_signal.connect(self._handle_voice_command)
+
+        # Start command detection independently of Whisper dictation.
+        # This listener uses the lightweight Vosk model on CPU.
+        self._voice_command_listener.start()
 
         # ============================================================
         # LOCAL LIVE VIDEO SIDEBAR
@@ -1771,6 +1892,17 @@ class LiveVideoScreen(QWidget):
 
         assisted_layout.addLayout(assisted_header)
         assisted_layout.addWidget(self.canvas, 1)
+
+        # Compact dictation overlay on top of Assisted View.
+        # This is a child overlay and does not consume layout space.
+        self.dictation_overlay = _DictationOverlay(parent=self.canvas)
+        self.dictation_overlay.setGeometry(
+            max(10, self.canvas.width() - max(440, int(self.canvas.width() * 0.40)) - 10),
+            max(10, self.canvas.height() - 180 - 10),
+            max(440, int(self.canvas.width() * 0.40)),
+            180,
+        )
+        self.dictation_overlay.raise_()
 
         # Original View
         self.original_canvas = _FeedCanvas()
@@ -2133,6 +2265,19 @@ class LiveVideoScreen(QWidget):
     # SURGEON DICTATION CONTROL
     # ============================================================
 
+    def _handle_voice_command(self, command: str):
+        """Route recognized Aether voice commands to dictation controls."""
+        command = str(command).strip().lower()
+
+        if command == "start":
+            self._start_dictation()
+        elif command == "pause":
+            self._pause_dictation()
+        elif command == "resume":
+            self._resume_dictation()
+        elif command == "stop":
+            self._stop_dictation()
+
     def _start_dictation(self):
         if self._dictation_manager is not None:
             if self._dictation_manager.is_running:
@@ -2299,6 +2444,15 @@ class LiveVideoScreen(QWidget):
             current + "[...] " + text
         )
 
+        if hasattr(self, "dictation_overlay"):
+            overlay_text = current + text
+            self.dictation_overlay.set_status("LISTENING")
+            self.dictation_overlay.set_text(overlay_text)
+
+        viewer = getattr(self, "_assisted_fullscreen_viewer", None)
+        if viewer is not None and viewer.isVisible():
+            viewer.set_dictation("LISTENING", overlay_text)
+
     def _on_dictation_final(self, segment):
         self._dictation_segments = (
             self._dictation_manager.get_segments()
@@ -2318,6 +2472,21 @@ class LiveVideoScreen(QWidget):
             else "Listening..."
         )
 
+        if hasattr(self, "dictation_overlay"):
+            overlay_text = "\n".join(
+                item.text
+                for item in self._dictation_segments[-3:]
+            )
+            self.dictation_overlay.set_status("LISTENING")
+            final_overlay_text = (
+                overlay_text if overlay_text else "Listening..."
+            )
+            self.dictation_overlay.set_text(final_overlay_text)
+
+        viewer = getattr(self, "_assisted_fullscreen_viewer", None)
+        if viewer is not None and viewer.isVisible():
+            viewer.set_dictation("LISTENING", final_overlay_text)
+
     def _on_dictation_error(self, message):
         self.dictation_status.setText(
             "MICROPHONE ERROR"
@@ -2326,6 +2495,10 @@ class LiveVideoScreen(QWidget):
         self.dictation_transcript.setText(
             f"Microphone error: {message}"
         )
+
+        if hasattr(self, "dictation_overlay"):
+            self.dictation_overlay.set_status("MICROPHONE ERROR")
+            self.dictation_overlay.set_text(str(message))
 
     # ── Resize: reposition floating overlays ──────────────────────────
 
@@ -2372,8 +2545,28 @@ class LiveVideoScreen(QWidget):
         if hasattr(self, 'btn_pause') and hasattr(self, '_canvas_container'):
             cw = self._canvas_container.width()
             self.btn_pause.move(cw - 56, 12)
+
         if hasattr(self, 'vitals_hud'):
             self.vitals_hud.move(16, 16)
+
+        # Keep the compact dictation overlay inside Assisted View.
+        if hasattr(self, 'dictation_overlay') and hasattr(self, 'canvas'):
+            canvas_width = self.canvas.width()
+            canvas_height = self.canvas.height()
+
+            # Larger compact overlay: approximately 2x the original size.
+            overlay_width = max(440, int(canvas_width * 0.40))
+            overlay_width = min(overlay_width, max(440, canvas_width - 20))
+
+            overlay_height = 180
+
+            self.dictation_overlay.setGeometry(
+                max(10, canvas_width - overlay_width - 10),
+                max(10, canvas_height - overlay_height - 10),
+                overlay_width,
+                overlay_height,
+            )
+            self.dictation_overlay.raise_()
 
     def _reposition_pause_btn(self):
         self._reposition_overlays()
@@ -3324,4 +3517,14 @@ class LiveVideoScreen(QWidget):
                 self.btn_header_stop.setText("■ STOP SESSION")
                 self.btn_header_stop.setEnabled(False)
             self.status_label.setText("Recording idle")
+
+    def closeEvent(self, event):
+        """Cleanly stop background voice-command detection when the screen closes."""
+        try:
+            if hasattr(self, "_voice_command_listener") and self._voice_command_listener:
+                self._voice_command_listener.stop()
+        except Exception:
+            pass
+
+        event.accept()
 
