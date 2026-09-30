@@ -9,10 +9,12 @@
 import math
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-    QPushButton, QFrame, QWidget,
+    QPushButton, QFrame, QWidget, QToolButton,
 )
 from PyQt6.QtCore import Qt, QRectF
-from PyQt6.QtGui import QFont, QColor, QPainter, QPen, QLinearGradient
+from PyQt6.QtGui import (
+    QFont, QColor, QPainter, QPen, QLinearGradient, QPainterPath
+)
 
 from shared_networking.authentication import AuthManager
 from theme_manager import ThemeManager
@@ -56,6 +58,91 @@ class _LoginLogoBadge(QWidget):
         p.drawLine(26, 15, 26, 37)
         p.drawLine(16, 26, 36, 26)
         p.end()
+
+
+class _PasswordEyeButton(QToolButton):
+    """Painted password visibility button, independent of desktop icon themes."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setCheckable(True)
+        self.setFixedSize(30, 30)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip("Show password")
+        self.setAttribute(
+            Qt.WidgetAttribute.WA_TranslucentBackground,
+            True,
+        )
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        color = QColor("#94A3B8")
+
+        if self.underMouse():
+            color = QColor("#FFFFFF")
+
+        painter.setPen(QPen(color, 1.8))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+
+        # Eye outline
+        eye = QPainterPath()
+        eye.moveTo(4, 15)
+        eye.cubicTo(9, 8, 21, 8, 26, 15)
+        eye.cubicTo(21, 22, 9, 22, 4, 15)
+        painter.drawPath(eye)
+
+        # Pupil
+        painter.setBrush(color)
+        painter.drawEllipse(11, 11, 8, 8)
+
+        # Eye-off slash
+        if not self.isChecked():
+            painter.setPen(QPen(color, 1.8))
+            painter.drawLine(4, 4, 26, 26)
+
+        painter.end()
+
+
+class _CapsAwareLineEdit(QLineEdit):
+    """Password field that detects Caps Lock state from keyboard events."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._caps_lock_on = False
+        self._caps_lock_callback = None
+
+    def set_caps_lock_callback(self, callback):
+        self._caps_lock_callback = callback
+
+    def _notify_caps_lock(self):
+        if self._caps_lock_callback:
+            self._caps_lock_callback(self._caps_lock_on)
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_CapsLock:
+            self._caps_lock_on = not self._caps_lock_on
+            self._notify_caps_lock()
+            super().keyPressEvent(event)
+            return
+
+        text = event.text()
+
+        if text and text.isalpha():
+            shift = bool(
+                event.modifiers()
+                & Qt.KeyboardModifier.ShiftModifier
+            )
+
+            if text.isupper() and not shift:
+                self._caps_lock_on = True
+            elif text.islower() and shift:
+                self._caps_lock_on = True
+
+            self._notify_caps_lock()
+
+        super().keyPressEvent(event)
 
 
 class LoginDialog(QDialog):
@@ -169,13 +256,51 @@ class LoginDialog(QDialog):
         main.addWidget(pw_label)
         main.addSpacing(6)
 
-        self._password_input = QLineEdit()
+        password_container = QFrame()
+        password_container.setObjectName("PasswordContainer")
+        password_container.setFixedSize(372, 44)
+
+        self._password_input = _CapsAwareLineEdit(
+            password_container
+        )
         self._password_input.setObjectName("LoginInput")
         self._password_input.setPlaceholderText("Enter password")
         self._password_input.setEchoMode(QLineEdit.EchoMode.Password)
         self._password_input.setFixedHeight(44)
+        self._password_input.setGeometry(
+            0, 0,
+            372, 44
+        )
+        self._password_input.setStyleSheet(
+            "QLineEdit#LoginInput { padding-right: 42px; }"
+        )
         self._password_input.returnPressed.connect(self._on_login)
-        main.addWidget(self._password_input)
+
+        self._password_eye = _PasswordEyeButton(
+            password_container
+        )
+        self._password_eye.move(334, 7)
+        self._password_eye.toggled.connect(
+            self._toggle_password_visibility
+        )
+
+        main.addWidget(password_container)
+
+        self._caps_lock_label = QLabel("⚠ Caps Lock is ON")
+        self._caps_lock_label.setObjectName("CapsLockWarning")
+        self._caps_lock_label.setVisible(False)
+        self._caps_lock_label.setFixedHeight(18)
+
+        self._caps_lock_label.setStyleSheet(
+            "color: #F59E0B; font-size: 12px; font-weight: 600;"
+        )
+
+        main.addWidget(self._caps_lock_label)
+
+        self._password_input.set_caps_lock_callback(
+            self._update_caps_lock_warning
+        )
+
         main.addSpacing(10)
 
         # ── Error message ──
@@ -204,6 +329,23 @@ class LoginDialog(QDialog):
         main.addWidget(footer)
 
         outer.addWidget(self._bg)
+
+    def _toggle_password_visibility(self, visible: bool):
+        """Toggle password visibility."""
+        if visible:
+            self._password_input.setEchoMode(
+                QLineEdit.EchoMode.Normal
+            )
+            self._password_eye.setToolTip("Hide password")
+        else:
+            self._password_input.setEchoMode(
+                QLineEdit.EchoMode.Password
+            )
+            self._password_eye.setToolTip("Show password")
+
+    def _update_caps_lock_warning(self, enabled: bool):
+        """Show or hide the Caps Lock warning."""
+        self._caps_lock_label.setVisible(enabled)
 
     def _on_login(self):
         """Handle login button click."""
@@ -257,6 +399,11 @@ class LoginDialog(QDialog):
                     );
                     border-radius: 1px;
                 }
+                #PasswordContainer {
+                    background: transparent;
+                    border: none;
+                }
+
                 #LoginSystemName {
                     background: transparent;
                     color: #4A5568;
@@ -359,6 +506,11 @@ class LoginDialog(QDialog):
                     );
                     border-radius: 1px;
                 }
+                #PasswordContainer {
+                    background: transparent;
+                    border: none;
+                }
+
                 #LoginSystemName {
                     background: transparent;
                     color: #94A3B8;
