@@ -5,7 +5,7 @@ Patient Vitals, System Status.
 """
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame,
                              QSizePolicy, QProgressBar, QGridLayout, QTextEdit,
-                             QScrollArea)
+                             QScrollArea, QCheckBox, QMessageBox)
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QPainter, QColor
 
@@ -67,213 +67,579 @@ class SidebarCard(QFrame):
 class PatientSidebar(QWidget):
     """Left sidebar: Patient Information + Procedure Information + Patient Vitals + System Status."""
 
+
+    def _confirm_site_marking(self, state):
+        """Require explicit surgeon confirmation for surgical-site marking."""
+        checkbox = self._readiness_checks["site"]
+
+        if state == Qt.CheckState.Checked:
+            result = QMessageBox.question(
+                self,
+                "Confirm Site Marking",
+                "Confirm that the surgical site has been identified "
+                "and verified.",
+                QMessageBox.StandardButton.Cancel
+                | QMessageBox.StandardButton.Yes,
+                QMessageBox.StandardButton.Cancel,
+            )
+
+            if result != QMessageBox.StandardButton.Yes:
+                checkbox.blockSignals(True)
+                checkbox.setChecked(False)
+                checkbox.blockSignals(False)
+                self._update_readiness_ui()
+                return
+
+            self._readiness_status_labels["site"].setText("CONFIRMED")
+            self._readiness_status_labels["site"].setStyleSheet(
+                "color: #4ADE80; font-size: 9px; font-weight: 700; "
+                "background: transparent;"
+            )
+
+        else:
+            self._readiness_status_labels["site"].setText("CONFIRM")
+            self._readiness_status_labels["site"].setStyleSheet(
+                "color: #94A3B8; font-size: 9px; font-weight: 700; "
+                "background: transparent;"
+            )
+
+        self._update_readiness_ui()
+
+    def _confirm_lab_results(self, state):
+        """Require explicit confirmation that required lab results were reviewed."""
+        checkbox = self._readiness_checks["labs"]
+
+        if state == Qt.CheckState.Checked:
+            result = QMessageBox.question(
+                self,
+                "Review Lab Results",
+                "Confirm that the required laboratory results "
+                "have been reviewed and are available for the case.",
+                QMessageBox.StandardButton.Cancel
+                | QMessageBox.StandardButton.Yes,
+                QMessageBox.StandardButton.Cancel,
+            )
+
+            if result != QMessageBox.StandardButton.Yes:
+                checkbox.blockSignals(True)
+                checkbox.setChecked(False)
+                checkbox.blockSignals(False)
+
+                self._readiness_status_labels["labs"].setText("REVIEW")
+                self._readiness_status_labels["labs"].setStyleSheet(
+                    "color: #FBBF24; font-size: 9px; font-weight: 700; "
+                    "background: transparent;"
+                )
+
+                self._update_readiness_ui()
+                return
+
+            self._readiness_status_labels["labs"].setText("REVIEWED")
+            self._readiness_status_labels["labs"].setStyleSheet(
+                "color: #4ADE80; font-size: 9px; font-weight: 700; "
+                "background: transparent;"
+            )
+
+        else:
+            self._readiness_status_labels["labs"].setText("REVIEW")
+            self._readiness_status_labels["labs"].setStyleSheet(
+                "color: #FBBF24; font-size: 9px; font-weight: 700; "
+                "background: transparent;"
+            )
+
+        self._update_readiness_ui()
+
+    def _update_readiness_ui(self):
+        """Update count, progress, and overall case-readiness state."""
+        completed = sum(
+            1
+            for checkbox in self._readiness_checks.values()
+            if checkbox.isChecked()
+        )
+
+        self._readiness_progress.setValue(completed)
+        self._readiness_count.setText(
+            f"{completed} / {self._readiness_total} COMPLETED"
+        )
+
+        if completed >= self._readiness_total:
+            self._readiness_case_status.setText("CASE READY")
+            self._readiness_case_status.setStyleSheet(
+                "color: #4ADE80; font-size: 11px; font-weight: 800; "
+                "background: transparent;"
+            )
+        else:
+            remaining = self._readiness_total - completed
+            self._readiness_case_status.setText(
+                f"PRE-OP INCOMPLETE  •  {remaining} PENDING"
+            )
+            self._readiness_case_status.setStyleSheet(
+                "color: #FBBF24; font-size: 11px; font-weight: 800; "
+                "background: transparent;"
+            )
+
+    def set_preop_readiness(self, key, completed, status_text=None):
+        """
+        Allow future workflow/backend integration to update a readiness item.
+
+        Example:
+            sidebar.set_preop_readiness("labs", True, "AVAILABLE")
+        """
+        if key not in self._readiness_checks:
+            return
+
+        checkbox = self._readiness_checks[key]
+
+        checkbox.blockSignals(True)
+        checkbox.setChecked(bool(completed))
+        checkbox.blockSignals(False)
+
+        if status_text:
+            self._readiness_status_labels[key].setText(str(status_text))
+
+        if completed:
+            self._readiness_status_labels[key].setStyleSheet(
+                "color: #4ADE80; font-size: 9px; font-weight: 700; "
+                "background: transparent;"
+            )
+        else:
+            self._readiness_status_labels[key].setStyleSheet(
+                "color: #FBBF24; font-size: 9px; font-weight: 700; "
+                "background: transparent;"
+            )
+
+        self._update_readiness_ui()
     def __init__(self, parent=None):
         super().__init__(parent)
+
+        # Keep the original Marisa Köhler sidebar width and card language.
         self.setFixedWidth(320)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
 
         container = QWidget()
         layout = QVBoxLayout(container)
         layout.setContentsMargins(0, 8, 0, 8)
         layout.setSpacing(8)
 
-        # --- Patient Information card ---
+        # ============================================================
+        # 1. PATIENT INFORMATION
+        # ============================================================
         patient_card = SidebarCard("Patient Information")
+
         header = QHBoxLayout()
+
         avatar = QLabel("MK")
         avatar.setObjectName("PatientAvatar")
         avatar.setFixedSize(42, 42)
         avatar.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
         header.addWidget(avatar)
+
         name_box = QVBoxLayout()
         name_box.setSpacing(2)
-        name = QLabel("Marisa K\u00F6hler")
+
+        name = QLabel("Marisa Köhler")
         name.setObjectName("PatientName")
-        meta = QLabel("MRN  \u00B7  0048-23119")
+
+        meta = QLabel("MRN  ·  0048-23119")
         meta.setObjectName("PatientMeta")
+
         name_box.addWidget(name)
         name_box.addWidget(meta)
         header.addLayout(name_box)
         header.addStretch()
+
         patient_card.layout.addLayout(header)
         patient_card.layout.addWidget(hline())
-        patient_card.add_row("Age / Sex", "58  \u00B7  F")
+
+        # Keep this card focused only on identity/demographics.
+        patient_card.add_row("Age / Sex", "58  ·  F")
         patient_card.add_row("Blood", "O+")
-        patient_card.add_row("Allergies", "Penicillin", warn=True)
-        patient_card.add_row("Medication", "Propofol, Fentanyl")
-        patient_card.add_row("Diagnosis", "Acute Cholecystitis", bold=True)
+
         layout.addWidget(patient_card)
 
-        # --- Procedure Information card ---
-        proc_card = SidebarCard("Procedure Information")
-        type_row = QVBoxLayout()
-        type_row.setSpacing(3)
-        type_lbl = QLabel("Type")
-        type_lbl.setObjectName("FieldLabel")
-        type_val = QLabel("Laparoscopic Cholecystectomy")
-        type_val.setObjectName("FieldValueBold")
-        type_val.setStyleSheet("font-size: 15px;")
-        type_val.setWordWrap(True)
-        type_row.addWidget(type_lbl)
-        type_row.addWidget(type_val)
-        proc_card.layout.addLayout(type_row)
-        proc_card.layout.addWidget(hline())
-        proc_card.add_row("Code", "ICD-10 K80.20")
-        proc_card.add_row("Surgeon", "Dr. A. Voss", bold=True)
-        proc_card.add_row("Assist", "Dr. R. Iyer", bold=True)
-        proc_card.add_row("OR", "Suite 03")
-        proc_card.add_row("Start", "08:42 UTC")
-        proc_card.layout.addWidget(hline())
+        # ============================================================
+        # 2. ALLERGIES
+        #    Replaces the old Procedure Information card.
+        # ============================================================
+        allergy_card = SidebarCard("Allergies")
 
-        phase_lbl = QLabel("PHASE")
-        phase_lbl.setObjectName("SidebarCardTitle")
-        proc_card.layout.addWidget(phase_lbl)
-        phase_row = QHBoxLayout()
-        phase_name = QLabel("Dissection")
-        phase_name.setObjectName("FieldValueBold")
-        phase_step = QLabel("Step 4 / 7")
-        phase_step.setObjectName("FieldLabel")
-        phase_row.addWidget(phase_name)
-        phase_row.addStretch()
-        phase_row.addWidget(phase_step)
-        proc_card.layout.addLayout(phase_row)
+        allergy_title = QLabel("KNOWN ALLERGIES")
+        allergy_title.setObjectName("SidebarCardTitle")
+        allergy_card.layout.addWidget(allergy_title)
 
-        progress = QProgressBar()
-        progress.setRange(0, 7)
-        progress.setValue(4)
-        progress.setTextVisible(False)
-        progress.setFixedHeight(6)
-        proc_card.layout.addWidget(progress)
-        proc_card.layout.addWidget(hline())
+        allergy_row = QHBoxLayout()
+        allergy_row.setSpacing(8)
 
-        # Surgery Notes
-        notes_lbl = QLabel("PROCEDURE NOTES")
-        notes_lbl.setObjectName("SidebarCardTitle")
-        proc_card.layout.addWidget(notes_lbl)
-        self.surgery_notes = QTextEdit()
-        self.surgery_notes.setObjectName("SurgeryNotes")
-        self.surgery_notes.setPlainText(
+        penicillin = QLabel("Penicillin")
+        penicillin.setObjectName("FieldValueWarn")
+        penicillin.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        penicillin.setStyleSheet(
+            "padding: 6px 10px; "
+            "border-radius: 5px; "
+            "background: rgba(239, 68, 68, 0.12); "
+            "border: 1px solid rgba(239, 68, 68, 0.55);"
+        )
+
+        latex = QLabel("Latex")
+        latex.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        latex.setStyleSheet(
+            "padding: 6px 10px; "
+            "border-radius: 5px; "
+            "background: rgba(239, 68, 68, 0.12); "
+            "border: 1px solid rgba(239, 68, 68, 0.55);"
+        )
+
+        allergy_row.addWidget(penicillin)
+        allergy_row.addWidget(latex)
+        allergy_row.addStretch()
+
+        allergy_card.layout.addLayout(allergy_row)
+        allergy_card.layout.addWidget(hline())
+        allergy_card.add_row("Status", "Reviewed", bold=True)
+
+        layout.addWidget(allergy_card)
+
+        # ============================================================
+        # 3. MEDICAL HISTORY
+        #    Replaces the old Dissection / Phase information.
+        # ============================================================
+        history_card = SidebarCard("Medical History")
+
+        history_card.add_row(
+            "Diagnosis",
+            "Acute Cholecystitis",
+            bold=True,
+        )
+
+        history_card.layout.addWidget(hline())
+
+        history_title = QLabel("CLINICAL NOTES")
+        history_title.setObjectName("SidebarCardTitle")
+        history_card.layout.addWidget(history_title)
+
+        history_notes = QLabel(
             "Patient positioned.\n"
             "Access achieved.\n"
             "Tumor identified.\n"
             "Blood loss minimal."
         )
-        self.surgery_notes.setMinimumHeight(100)
-        self.surgery_notes.setMaximumHeight(140)
-        proc_card.layout.addWidget(self.surgery_notes)
-        layout.addWidget(proc_card)
+        history_notes.setWordWrap(True)
+        history_notes.setObjectName("FieldValue")
+        history_card.layout.addWidget(history_notes)
 
-        # --- Patient Vitals card ---
-        vitals_card = SidebarCard("Patient Vitals")
+        layout.addWidget(history_card)
+
+        # ============================================================
+        # 4. ACTIVE MEDICATIONS
+        #    Replaces the old Patient Vitals card.
+        # ============================================================
+        medication_card = SidebarCard("Active Medications")
+
+        medication_card.add_row(
+            "Current",
+            "Propofol, Fentanyl",
+            bold=True,
+        )
+
+        medication_card.layout.addWidget(hline())
+
+        medication_note = QLabel(
+            "Medication status verified for procedure."
+        )
+        medication_note.setWordWrap(True)
+        medication_note.setObjectName("FieldLabel")
+        medication_card.layout.addWidget(medication_note)
+
+        layout.addWidget(medication_card)
+
+        # ============================================================
+        # 5. VITALS
+        #    Replaces the old System Status card.
+        #    Keep the existing dynamic PatientVitalsModel interface.
+        # ============================================================
+        vitals_card = SidebarCard("Vitals")
+
         v_title_row = QHBoxLayout()
+
         v_title = QLabel("PATIENT VITALS")
         v_title.setObjectName("SidebarSectionTitle")
+
         self._vitals_status_label = QLabel("NO DATA")
-        self._vitals_status_label.setStyleSheet("color: #94A3B8; font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 4px; background: rgba(148, 163, 184, 0.15);")
+        self._vitals_status_label.setStyleSheet(
+            "color: #94A3B8; "
+            "font-size: 10px; "
+            "font-weight: 700; "
+            "padding: 2px 6px; "
+            "border-radius: 4px; "
+            "background: rgba(148, 163, 184, 0.15);"
+        )
+
         v_title_row.addWidget(v_title)
         v_title_row.addStretch()
         v_title_row.addWidget(self._vitals_status_label)
-        # Replace the default title widget added by SidebarCard with the row
+
+        # Remove the SidebarCard's automatically-created title.
         if vitals_card.layout.count() > 0:
             old_title = vitals_card.layout.takeAt(0).widget()
             if old_title:
                 old_title.deleteLater()
+
         vitals_card.layout.addLayout(v_title_row)
 
         vitals_grid = QGridLayout()
         vitals_grid.setSpacing(8)
+
         vitals_config = [
             ("HR", "bpm", 0, 0),
-            ("SpO\u2082", "%", 0, 1),
+            ("SpO₂", "%", 0, 1),
             ("BP", "mmHg", 1, 0),
-            ("Temp", "\u00B0C", 1, 1),
+            ("Temp", "°C", 1, 1),
         ]
+
         self._vital_val_labels = {}
-        for label, unit, row_idx, col_idx in vitals_config:
+
+        for label_text, unit, row_idx, col_idx in vitals_config:
             cell = QFrame()
             cell.setObjectName("Card")
+
             cell_lay = QVBoxLayout(cell)
             cell_lay.setContentsMargins(10, 8, 10, 8)
             cell_lay.setSpacing(2)
-            lab = QLabel(label)
+
+            lab = QLabel(label_text)
             lab.setObjectName("VitalLabel")
+
             val = QLabel("--")
             val.setObjectName("VitalValue")
-            val.setStyleSheet("font-size: 26px; color: #94A3B8;")
-            key = "SpO2" if "SpO" in label else label
+            val.setStyleSheet(
+                "font-size: 26px; color: #94A3B8;"
+            )
+
+            key = "SpO2" if "SpO" in label_text else label_text
             self._vital_val_labels[key] = val
 
             un = QLabel(unit)
             un.setObjectName("VitalUnit")
+
             cell_lay.addWidget(lab)
+
             val_row = QHBoxLayout()
             val_row.setSpacing(4)
             val_row.addWidget(val)
-            val_row.addWidget(un, alignment=Qt.AlignmentFlag.AlignBottom)
+            val_row.addWidget(
+                un,
+                alignment=Qt.AlignmentFlag.AlignBottom
+            )
             val_row.addStretch()
+
             cell_lay.addLayout(val_row)
-            vitals_grid.addWidget(cell, row_idx, col_idx)
+
+            vitals_grid.addWidget(
+                cell,
+                row_idx,
+                col_idx,
+            )
+
         vitals_card.layout.addLayout(vitals_grid)
         layout.addWidget(vitals_card)
 
-        # --- System Status card ---
-        status_card = SidebarCard("System Status")
+        # System status is no longer displayed as a separate card.
+        # Keep this dictionary so existing callers remain safe.
         self._system_status_dots = {}
 
-        for label in (
-            "Manipulator",
-            "YOLO",
-            "Recording",
-            "Network",
-            "Storage",
-            "Camera",
-            "Broadcasting",
-        ):
+        layout.addStretch(1)
+
+
+        # --- Pre-Op Readiness card ---
+        readiness_card = SidebarCard("Pre-Op Readiness")
+
+        self._readiness_checks = {}
+        self._readiness_status_labels = {}
+        self._readiness_total = 5
+
+        readiness_items = [
+            ("consent", "Consent", "COMPLETED", True, False),
+            ("imaging", "Imaging Review", "REVIEWED", True, False),
+            ("anesthesia", "Anesthesia Clearance", "CLEARED", True, False),
+            ("site", "Site Marking", "CONFIRM", False, True),
+            ("labs", "Lab Results", "REVIEW", False, True),
+        ]
+
+        for key, label_text, status_text, checked, interactive in readiness_items:
             row = QHBoxLayout()
-            row.setContentsMargins(0, 2, 0, 2)
+            row.setContentsMargins(0, 0, 0, 0)
+            row.setSpacing(6)
 
-            lbl = QLabel(label)
-            lbl.setObjectName("SystemStatusLabel")
+            checkbox = QCheckBox()
+            checkbox.setFixedWidth(20)
+            checkbox.setChecked(checked)
+            checkbox.setEnabled(interactive)
 
-            dot = _StatusDot("#6B7B8D")
-            self._system_status_dots[label] = dot
+            checkbox.setStyleSheet("""
+                QCheckBox {
+                    spacing: 0px;
+                    background: transparent;
+                }
+                QCheckBox::indicator {
+                    width: 14px;
+                    height: 14px;
+                    border-radius: 3px;
+                    border: 1px solid #475569;
+                    background: #0F172A;
+                }
+                QCheckBox::indicator:checked {
+                    border: 1px solid #38BDF8;
+                    background: #38BDF8;
+                }
+                QCheckBox::indicator:disabled {
+                    border: 1px solid #334155;
+                    background: #172033;
+                }
+                QCheckBox::indicator:checked:disabled {
+                    border: 1px solid #64748B;
+                    background: #64748B;
+                }
+            """)
 
-            row.addWidget(lbl)
+            name = QLabel(label_text)
+            name.setObjectName("FieldValue")
+            name.setStyleSheet(
+                "font-size: 11px; font-weight: 600; background: transparent;"
+            )
+
+            status = QLabel(status_text)
+            status.setAlignment(Qt.AlignmentFlag.AlignRight)
+            status.setStyleSheet(
+                "color: #94A3B8; font-size: 9px; font-weight: 700; "
+                "background: transparent;"
+            )
+
+            if key in ("consent", "imaging", "anesthesia"):
+                status.setStyleSheet(
+                    "color: #4ADE80; font-size: 9px; font-weight: 700; "
+                    "background: transparent;"
+                )
+            elif key == "labs":
+                status.setStyleSheet(
+                    "color: #FBBF24; font-size: 9px; font-weight: 700; "
+                    "background: transparent;"
+                )
+
+            row.addWidget(checkbox)
+            row.addWidget(name)
             row.addStretch()
-            row.addWidget(dot)
+            row.addWidget(status)
 
-            status_card.layout.addLayout(row)
+            readiness_card.layout.addLayout(row)
 
-        layout.addWidget(status_card)
+            self._readiness_checks[key] = checkbox
+            self._readiness_status_labels[key] = status
 
-        layout.addStretch()
+        readiness_card.layout.addWidget(hline())
+
+        readiness_heading = QLabel("CASE READINESS")
+        readiness_heading.setObjectName("SidebarCardTitle")
+        readiness_card.layout.addWidget(readiness_heading)
+
+        readiness_status = QLabel("PRE-OP INCOMPLETE")
+        readiness_status.setObjectName("FieldValueBold")
+        readiness_status.setStyleSheet(
+            "color: #FBBF24; font-size: 11px; font-weight: 800; "
+            "background: transparent;"
+        )
+        self._readiness_case_status = readiness_status
+        readiness_card.layout.addWidget(readiness_status)
+
+        self._readiness_progress = QProgressBar()
+        self._readiness_progress.setRange(0, self._readiness_total)
+        self._readiness_progress.setValue(3)
+        self._readiness_progress.setTextVisible(False)
+        self._readiness_progress.setFixedHeight(6)
+        self._readiness_progress.setStyleSheet("""
+            QProgressBar {
+                background: #172033;
+                border: none;
+                border-radius: 3px;
+            }
+            QProgressBar::chunk {
+                background: #38BDF8;
+                border-radius: 3px;
+            }
+        """)
+        readiness_card.layout.addWidget(self._readiness_progress)
+
+        self._readiness_count = QLabel("3 / 5 COMPLETED")
+        self._readiness_count.setStyleSheet(
+            "color: #94A3B8; font-size: 9px; font-weight: 700; "
+            "background: transparent;"
+        )
+        readiness_card.layout.addWidget(self._readiness_count)
+
+        self._readiness_checks["site"].stateChanged.connect(
+            self._confirm_site_marking
+        )
+
+        self._readiness_checks["labs"].stateChanged.connect(
+            self._confirm_lab_results
+        )
+
+        layout.addWidget(readiness_card)
+
+        # --- Surgical Plan card ---
+        plan_card = SidebarCard("Surgical Plan")
+
+        plan_card.add_row("Approach", "Laparoscopic", bold=True)
+        plan_card.add_row("Target", "Gallbladder", bold=True)
+        plan_card.add_row("Position", "Supine")
+
+        plan_card.layout.addWidget(hline())
+
+        consideration_title = QLabel("KEY CONSIDERATION")
+        consideration_title.setObjectName("SidebarCardTitle")
+        plan_card.layout.addWidget(consideration_title)
+
+        consideration = QLabel(
+            "Inflammation around the cystic duct. "
+            "Review imaging before proceeding."
+        )
+        consideration.setWordWrap(True)
+        consideration.setStyleSheet(
+            "color: #CBD5E1; font-size: 10px; "
+            "font-weight: 600; line-height: 1.3; "
+            "background: transparent;"
+        )
+        plan_card.layout.addWidget(consideration)
+
+        plan_card.layout.addStretch(1)
+
+        # Let the Surgical Plan absorb the remaining sidebar height.
+        plan_card.setSizePolicy(
+            QSizePolicy.Policy.Preferred,
+            QSizePolicy.Policy.Expanding,
+        )
+        layout.addWidget(plan_card, 1)
+
+        layout.addStretch(1)
 
         scroll.setWidget(container)
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.addWidget(scroll)
 
-    def set_system_status(self, component: str, state: str):
-        """Set a colour-only status indicator for a system component."""
-        dot = self._system_status_dots.get(component)
-        if dot is None:
-            return
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.addWidget(scroll)
+    def set_system_status(self, component, state):
+        """Compatibility hook for the global status updates.
 
-        colors = {
-            "green": "#10B981",
-            "yellow": "#F59E0B",
-            "red": "#EF4444",
-            "grey": "#6B7B8D",
-            "gray": "#6B7B8D",
-        }
-
-        dot._color = QColor(colors.get(state.lower(), "#6B7B8D"))
-        dot.update()
-
+        System Status is no longer shown as a separate card because the
+        sidebar layout now uses that space for patient vitals.
+        """
+        return
     def set_system_statuses(self, statuses: dict):
         """Update multiple colour-only system status indicators."""
         if not isinstance(statuses, dict):
