@@ -34,8 +34,121 @@ from widgets.patient_sidebar import PatientSidebar, SidebarCard, hline
 from input.joystick_controller import JoystickController
 from speech.voice_command_listener import VoiceCommandListener
 
+try:
+    import cv2
+except Exception:
+    cv2 = None
+
 
 INSTRUMENT_COLORS = {1: "#0095FF", 2: "#10B981", 3: "#8B5CF6", 4: "#F59E0B"}
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  INDEPENDENT ASSISTED VIEW VIDEO PLAYER
+# ═══════════════════════════════════════════════════════════════════
+
+class _AssistedVideoPlayer:
+    """
+    Independent video source for Assisted View.
+
+    This player is deliberately separate from YoloPipeline so an
+    Assisted View upload cannot overwrite the Original View source.
+    """
+
+    def __init__(self, owner):
+        self.owner = owner
+        self.cap = None
+        self.timer = QTimer(owner)
+        self.timer.timeout.connect(self._read_frame)
+
+        self.path = None
+        self.running = False
+        self.fps = 30.0
+
+    def load(self, path):
+        if cv2 is None:
+            return False, "OpenCV is not available"
+
+        self.stop()
+
+        cap = cv2.VideoCapture(path)
+
+        if not cap.isOpened():
+            cap.release()
+            return False, "Unable to open video"
+
+        fps = cap.get(cv2.CAP_PROP_FPS)
+
+        if not fps or fps <= 0 or fps > 240:
+            fps = 30.0
+
+        self.cap = cap
+        self.path = path
+        self.fps = fps
+        self.running = True
+
+        interval = max(1, int(1000.0 / self.fps))
+        self.timer.start(interval)
+
+        return True, ""
+
+    def _read_frame(self):
+        if not self.running or self.cap is None:
+            return
+
+        ret, frame = self.cap.read()
+
+        if not ret or frame is None:
+            # Assisted View is an independent looping source.
+            # Rewind only this video; never touch Original View
+            # or YoloPipeline.
+            try:
+                self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                ret, frame = self.cap.read()
+            except Exception:
+                ret, frame = False, None
+
+            if not ret or frame is None:
+                self.stop()
+                self.owner._on_assisted_video_finished()
+                return
+
+        try:
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+            h, w = frame_rgb.shape[:2]
+
+            qimage = QImage(
+                frame_rgb.data,
+                w,
+                h,
+                frame_rgb.strides[0],
+                QImage.Format.Format_RGB888,
+            ).copy()
+
+            # Do not touch Original View or YoloPipeline.
+            self.owner._on_assisted_video_frame(qimage)
+
+        except Exception as exc:
+            self.owner._on_assisted_video_error(str(exc))
+            self.stop()
+
+    def stop(self):
+        self.running = False
+
+        if self.timer.isActive():
+            self.timer.stop()
+
+        if self.cap is not None:
+            try:
+                self.cap.release()
+            except Exception:
+                pass
+
+        self.cap = None
+
+    def is_running(self):
+        return self.running
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -307,14 +420,14 @@ class _FullscreenVideoViewer(QWidget):
             canvas_height = self.canvas.height()
 
             overlay_width = min(
-                max(440, int(canvas_width * 0.40)),
-                max(440, canvas_width - 20),
+                max(300, int(canvas_width * 0.27)),
+                max(300, canvas_width - 40),
             )
             overlay_height = 180
 
             self.dictation_overlay.setGeometry(
-                max(10, canvas_width - overlay_width - 10),
-                max(10, canvas_height - overlay_height - 10),
+                max(20, canvas_width - overlay_width - 20),
+                max(20, (canvas_height - overlay_height) // 2),
                 overlay_width,
                 overlay_height,
             )
@@ -1433,16 +1546,18 @@ class _DictationOverlay(QFrame):
             }
             QLabel#DictationOverlayTitle {
                 color: #00D9FF;
-                font-size: 14px;
+                font-size: 42px;
                 font-weight: 700;
                 padding: 0px;
             }
-            QLabel#DictationOverlayText {
-                color: #FFFFFF;
-                font-size: 15px;
-                font-weight: 600;
-                padding: 0px;
-            }
+            QPlainTextEdit#DictationOverlayText {
+    color: #FFFFFF;
+    background: transparent;
+    border: none;
+    font-weight: 600;
+    font-size: 45px;
+    padding: 0px;
+}
         """)
 
         layout = QVBoxLayout(self)
@@ -1452,22 +1567,165 @@ class _DictationOverlay(QFrame):
         self.title_label = QLabel("● DICTATION")
         self.title_label.setObjectName("DictationOverlayTitle")
 
-        self.text_label = QLabel("")
+        from PyQt6.QtWidgets import QPlainTextEdit
+
+        self.text_label = QPlainTextEdit(self)
         self.text_label.setObjectName("DictationOverlayText")
-        self.text_label.setWordWrap(True)
-        self.text_label.setAlignment(
+        self.text_label.setReadOnly(True)
+        self.text_label.setFrameShape(QPlainTextEdit.Shape.NoFrame)
+        self.text_label.setLineWrapMode(
+            QPlainTextEdit.LineWrapMode.WidgetWidth
+        )
+        self.text_label.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.text_label.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.text_label.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.text_label.setContentsMargins(0, 0, 0, 0)
+        self.text_label.setViewportMargins(0, 0, 0, 0)
+        self.text_label.setStyleSheet("background: transparent; border: none;")
+        self.text_label.setObjectName("DictationOverlayText")
+        self.text_label.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
+        from PyQt6.QtGui import QTextOption
+        text_option = self.text_label.document().defaultTextOption()
+        text_option.setAlignment(
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
         )
-
+        self.text_label.document().setDefaultTextOption(text_option)
         layout.addWidget(self.title_label)
         layout.addWidget(self.text_label)
 
         self.setVisible(False)
 
-    def set_text(self, text):
-        self.text_label.setText(str(text).strip())
-        self.setVisible(bool(str(text).strip()))
+    def set_text(self, text: str):
+        """
+        Render the COMPLETE current dictation text.
 
+        Normal range:
+            45 px down to 30 px.
+
+        The font is measured with Qt's own word-wrapped metrics, so the
+        measurement matches the actual rendered widget much more closely
+        than manual word-by-word splitting.
+
+        When the complete sentence cannot physically fit at 30 px inside
+        the fixed 180 px overlay, the text is NOT truncated. The widget
+        keeps the complete sentence and enables vertical scrolling.
+        """
+        text = str(text or "").strip()
+
+        if not text:
+            self.text_label.clear()
+            self.text_label.setVerticalScrollBarPolicy(
+                Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+            )
+            self.text_label.setToolTip("")
+            return
+
+        # Make sure the parent/layout has a usable geometry before measuring.
+        try:
+            self.layout().activate()
+        except Exception:
+            pass
+
+        canvas_width = max(200, self.width())
+        canvas_height = max(120, self.height())
+
+        available_width = max(180, canvas_width - 32)
+
+        # Title + margins + layout spacing consume part of the 180 px box.
+        title_height = max(
+            18,
+            self.title_label.sizeHint().height()
+            if hasattr(self, "title_label")
+            else 20,
+        )
+        available_height = max(
+            48,
+            canvas_height
+            - 24
+            - title_height
+            - 7,
+        )
+
+        base_font = self.text_label.font()
+        chosen_px = 30
+        chosen_rect = None
+
+        # Use Qt's actual word-wrapped metrics.
+        for px in range(45, 29, -1):
+            font = base_font
+            font.setPixelSize(px)
+            font.setBold(True)
+            self.text_label.setFont(font)
+
+            metrics = self.text_label.fontMetrics()
+
+            rect = metrics.boundingRect(
+                0,
+                0,
+                available_width,
+                10000,
+                int(
+                    Qt.TextFlag.TextWordWrap
+                    | Qt.TextFlag.TextIncludeTrailingSpaces
+                ),
+                text,
+            )
+
+            if rect.height() <= available_height:
+                chosen_px = px
+                chosen_rect = rect
+                break
+
+        # Apply the selected real pixel font size.
+        final_font = base_font
+        final_font.setPixelSize(chosen_px)
+        final_font.setBold(True)
+        self.text_label.setFont(final_font)
+
+        # Always preserve the COMPLETE string.
+        self.text_label.setPlainText(text)
+        self.text_label.setToolTip(text)
+
+        metrics = self.text_label.fontMetrics()
+        final_rect = metrics.boundingRect(
+            0,
+            0,
+            available_width,
+            10000,
+            int(
+                Qt.TextFlag.TextWordWrap
+                | Qt.TextFlag.TextIncludeTrailingSpaces
+            ),
+            text,
+        )
+
+        # At 30px the complete sentence may still be taller than the
+        # fixed 180px overlay. Keep every word and make it scrollable.
+        needs_scroll = final_rect.height() > available_height
+
+        self.text_label.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+            if needs_scroll
+            else Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+
+        self.text_label.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+
+        # Start at the beginning whenever a new sentence is displayed.
+        cursor = self.text_label.textCursor()
+        cursor.setPosition(0)
+        self.text_label.setTextCursor(cursor)
+        self.text_label.ensureCursorVisible()
+
+        self.text_label.updateGeometry()
+        self.text_label.viewport().update()
+        self.text_label.update()
     def set_status(self, status):
         self.title_label.setText(f"● {status}")
 
@@ -1511,9 +1769,18 @@ class LiveVideoScreen(QWidget):
         # YOLO Pipeline
         self.pipeline = YoloPipeline(self)
         self.pipeline.frame_ready.connect(self._on_frame)
+        self.pipeline.assisted_frame_ready.connect(
+            self._on_assisted_yolo_frame
+        )
         self.pipeline.raw_frame_ready.connect(self._on_raw_frame)
         self.pipeline.stats_updated.connect(self._on_stats)
         self.pipeline.status_changed.connect(self._on_status)
+
+        # Independent Assisted View video source.
+        # This is separate from YoloPipeline / Original View.
+        self._assisted_video_player = _AssistedVideoPlayer(self)
+        self._assisted_video_active = False
+        self._assisted_video_path = None
 
         self._yolo_enabled = False
         self._vitals_enabled = False
@@ -1888,6 +2155,7 @@ class LiveVideoScreen(QWidget):
 
         assisted_header.addWidget(assisted_title)
         assisted_header.addStretch()
+
         assisted_header.addWidget(self.btn_fullscreen_assisted)
 
         assisted_layout.addLayout(assisted_header)
@@ -1897,9 +2165,9 @@ class LiveVideoScreen(QWidget):
         # This is a child overlay and does not consume layout space.
         self.dictation_overlay = _DictationOverlay(parent=self.canvas)
         self.dictation_overlay.setGeometry(
-            max(10, self.canvas.width() - max(440, int(self.canvas.width() * 0.40)) - 10),
-            max(10, self.canvas.height() - 180 - 10),
-            max(440, int(self.canvas.width() * 0.40)),
+            max(20, self.canvas.width() - max(300, int(self.canvas.width() * 0.27)) - 20),
+            max(20, (self.canvas.height() - 180) // 2),
+            max(300, int(self.canvas.width() * 0.27)),
             180,
         )
         self.dictation_overlay.raise_()
@@ -2001,6 +2269,19 @@ class LiveVideoScreen(QWidget):
         self.btn_focus.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_focus.setFixedSize(68, 34)
         ctrl_bar.addWidget(self.btn_focus)
+
+        # Assisted View independent video upload.
+        # This controls ONLY the Assisted View video source.
+        self.btn_assisted_load_video = QPushButton("UPLOAD VIDEO")
+        self.btn_assisted_load_video.setProperty("class", "GridButton")
+        self.btn_assisted_load_video.setCursor(
+            Qt.CursorShape.PointingHandCursor
+        )
+        self.btn_assisted_load_video.setFixedSize(120, 34)
+        self.btn_assisted_load_video.clicked.connect(
+            self._load_assisted_video
+        )
+        ctrl_bar.addWidget(self.btn_assisted_load_video)
 
         # Zoom out
         self.btn_zoom_out = QPushButton("\u2212")
@@ -2279,6 +2560,10 @@ class LiveVideoScreen(QWidget):
             self._stop_dictation()
 
     def _start_dictation(self):
+
+        # Show the large dictation overlay whenever a new
+        # dictation session starts.
+        self.dictation_overlay.show()
         if self._dictation_manager is not None:
             if self._dictation_manager.is_running:
                 return
@@ -2355,6 +2640,12 @@ class LiveVideoScreen(QWidget):
             self.dictation_error_signal.emit(str(exc))
 
     def _stop_dictation(self):
+
+        # STOP must immediately remove the large dictation
+        # overlay. Hiding the widget also prevents late partial/
+        # final callbacks from remaining visible after STOP.
+        self.dictation_overlay.set_text("")
+        self.dictation_overlay.hide()
         if self._dictation_manager is None:
             return
 
@@ -2445,7 +2736,10 @@ class LiveVideoScreen(QWidget):
         )
 
         if hasattr(self, "dictation_overlay"):
-            overlay_text = current + text
+            # Keep the large 3x overlay readable inside the compact 180px card.
+            # Show only the current live transcription instead of stacking
+            # multiple previous lines.
+            overlay_text = str(text).strip()
             self.dictation_overlay.set_status("LISTENING")
             self.dictation_overlay.set_text(overlay_text)
 
@@ -2473,14 +2767,14 @@ class LiveVideoScreen(QWidget):
         )
 
         if hasattr(self, "dictation_overlay"):
-            overlay_text = "\n".join(
-                item.text
-                for item in self._dictation_segments[-3:]
+            # The overlay uses 3x text, so keep only the newest completed
+            # dictation segment visible to prevent vertical clipping.
+            final_overlay_text = (
+                str(self._dictation_segments[-1].text).strip()
+                if self._dictation_segments
+                else "Listening..."
             )
             self.dictation_overlay.set_status("LISTENING")
-            final_overlay_text = (
-                overlay_text if overlay_text else "Listening..."
-            )
             self.dictation_overlay.set_text(final_overlay_text)
 
         viewer = getattr(self, "_assisted_fullscreen_viewer", None)
@@ -2555,14 +2849,14 @@ class LiveVideoScreen(QWidget):
             canvas_height = self.canvas.height()
 
             # Larger compact overlay: approximately 2x the original size.
-            overlay_width = max(440, int(canvas_width * 0.40))
-            overlay_width = min(overlay_width, max(440, canvas_width - 20))
+            overlay_width = max(300, int(canvas_width * 0.27))
+            overlay_width = min(overlay_width, max(300, canvas_width - 40))
 
             overlay_height = 180
 
             self.dictation_overlay.setGeometry(
-                max(10, canvas_width - overlay_width - 10),
-                max(10, canvas_height - overlay_height - 10),
+                max(20, canvas_width - overlay_width - 20),
+                max(20, (canvas_height - overlay_height) // 2),
                 overlay_width,
                 overlay_height,
             )
@@ -2599,6 +2893,14 @@ class LiveVideoScreen(QWidget):
         if hasattr(self, "original_canvas"):
             self.original_canvas.set_frame(raw_qimage)
 
+        # Assisted View follows Original only when it has no
+        # independent uploaded video.
+        if (
+            not getattr(self, "_assisted_video_active", False)
+            and hasattr(self, "pipeline")
+        ):
+            pass
+
         # Keep Original View fullscreen live when it is open.
         viewer = getattr(self, "_original_fullscreen_viewer", None)
         if viewer is not None and viewer.isVisible():
@@ -2608,9 +2910,28 @@ class LiveVideoScreen(QWidget):
         if self.broadcaster and self.mode == "robot":
             self.broadcaster.broadcast_qimage(raw_qimage)
 
+
+        # AETHER FIX: Original View must always receive clean raw frame.
+
+        try:
+
+            if hasattr(self, 'original_canvas'):
+
+                self.original_canvas.setPixmap(QPixmap.fromImage(qimage))
+
+        except Exception:
+
+            pass
+
     def _on_frame(self, qimage):
         """Update local canvas with local overlays (YOLO boxes/vitals)."""
         if self._paused:
+            return
+
+        # When Assisted View has its own uploaded video, that video owns
+        # the Assisted canvas. The Original View and YOLO pipeline remain
+        # completely independent.
+        if self._assisted_video_active:
             return
 
         # Assisted View receives the processed frame.
@@ -2660,8 +2981,10 @@ class LiveVideoScreen(QWidget):
         if viewer is not None and viewer.isVisible():
             viewer.set_frame(qimage)
 
-        # Process the same frame through YOLO & Vitals pipeline.
-        # This produces the Assisted View without running a second camera source.
+        # Keep the Original/YOLO pipeline running independently.
+        # If Assisted View has its own uploaded video, _on_frame()
+        # will ignore this pipeline output so it cannot overwrite
+        # the independent Assisted feed.
         self.pipeline.process_incoming_qimage(qimage)
 
     def on_stream_disconnected(self):
@@ -2781,25 +3104,201 @@ class LiveVideoScreen(QWidget):
         # Update FPS label if needed, or leave it to YOLO
         pass
 
-    def _load_video(self):
+    # ── Independent Assisted View Video ─────────────────────────────
+
+    def _load_assisted_video(self):
+        """
+        Load a video exclusively into Assisted View.
+
+        This must never call YoloPipeline.load_video(), because the
+        global pipeline owns the Original View source.
+        """
         path, _ = QFileDialog.getOpenFileName(
-            self, "Upload Video", "",
-            "Video Files (*.mp4 *.avi *.mkv *.mov *.wmv);;All Files (*)"
+            self,
+            "Upload Assisted View Video",
+            "",
+            "Video Files (*.mp4 *.avi *.mkv *.mov *.wmv);;All Files (*)",
+            options=QFileDialog.Option.DontUseNativeDialog,
         )
-        if path:
-            self.pipeline.load_video(path)
-            # Visual state: mark as active
-            self.btn_load_video.setProperty("active", "true")
-            self.btn_load_video.setText("Video Loaded")
-            self.btn_load_video.style().unpolish(self.btn_load_video)
-            self.btn_load_video.style().polish(self.btn_load_video)
-            # Update status section
-            import os as _os
-            self._s_camera.set_value(_os.path.basename(path)[:14])
-            self._s_camera.set_color("#10B981")
-            self._s_recording.set_value("VIDEO")
-            self._s_recording.set_color("#0095FF")
-            self.status_label.setText(f"Loaded: {_os.path.basename(path)}")
+
+        if not path:
+            return
+
+        # Stop only the previous Assisted View video.
+        self._assisted_video_player.stop()
+
+        ok, error = self._assisted_video_player.load(path)
+
+        if not ok:
+            self._assisted_video_active = False
+            self._assisted_video_path = None
+
+            QMessageBox.warning(
+                self,
+                "Assisted View Video",
+                error or "Unable to load the selected video."
+            )
+            return
+
+        self._assisted_video_active = True
+        self._assisted_video_path = path
+
+        self.btn_assisted_load_video.setText("VIDEO LOADED")
+
+        self.btn_assisted_load_video.setProperty("active", "true")
+        self.btn_assisted_load_video.style().unpolish(
+            self.btn_assisted_load_video
+        )
+        self.btn_assisted_load_video.style().polish(
+            self.btn_assisted_load_video
+        )
+
+        self.status_label.setText(
+            f"Assisted View loaded: {os.path.basename(path)}"
+        )
+
+        self.message_center.add_message(
+            f"Assisted View video loaded: {os.path.basename(path)}"
+        )
+
+    def _on_assisted_video_frame(self, qimage):
+        """
+        Receive a frame from the independent Assisted View source.
+
+        The Assisted video is processed independently from the
+        Original/global video. It uses the shared YOLO model but
+        submits the frame with source_id="assisted".
+        """
+        if not self._assisted_video_active:
+            return
+
+        if self._paused:
+            return
+
+        if qimage is None or qimage.isNull():
+            return
+
+        # When YOLO is enabled and the model is ready, send the
+        # Assisted frame through the YOLO pipeline.
+        if self._yolo_enabled and self.pipeline.is_model_loaded:
+            self.pipeline.process_incoming_qimage(
+                qimage,
+                source_id="assisted",
+                output_signal=self.pipeline.assisted_frame_ready,
+            )
+            return
+
+        # YOLO is disabled or still loading -> show the clean frame.
+        self.canvas.set_frame(qimage)
+
+        viewer = getattr(self, "_assisted_fullscreen_viewer", None)
+        if viewer is not None and viewer.isVisible():
+            viewer.set_frame(qimage)
+
+    def _on_assisted_yolo_frame(self, qimage):
+        """Display the YOLO-processed Assisted View frame."""
+        if not self._assisted_video_active:
+            return
+
+        if self._paused:
+            return
+
+        if qimage is None or qimage.isNull():
+            return
+
+        self.canvas.set_frame(qimage)
+
+        viewer = getattr(self, "_assisted_fullscreen_viewer", None)
+        if viewer is not None and viewer.isVisible():
+            viewer.set_frame(qimage)
+
+    def _on_assisted_video_finished(self):
+        """Handle natural end of the independent Assisted video."""
+        if not self._assisted_video_active:
+            return
+
+        self._assisted_video_active = False
+        self._assisted_video_path = None
+
+        self.btn_assisted_load_video.setProperty("active", "false")
+        self.btn_assisted_load_video.setText("UPLOAD VIDEO")
+        self.btn_assisted_load_video.style().unpolish(
+            self.btn_assisted_load_video
+        )
+        self.btn_assisted_load_video.style().polish(
+            self.btn_assisted_load_video
+        )
+
+        self.status_label.setText(
+            "Assisted View video finished"
+        )
+
+    def _on_assisted_video_error(self, error):
+        """Handle an error while reading the Assisted video."""
+        self.status_label.setText(
+            f"Assisted View video error: {error}"
+        )
+
+    def _stop_assisted_video(self):
+        """Stop only the independent Assisted View video."""
+        self._assisted_video_player.stop()
+
+        self._assisted_video_active = False
+        self._assisted_video_path = None
+
+        if hasattr(self, "btn_assisted_load_video"):
+            self.btn_assisted_load_video.setProperty(
+                "active", "false"
+            )
+            self.btn_assisted_load_video.setText(
+                "UPLOAD VIDEO"
+            )
+            self.btn_assisted_load_video.style().unpolish(
+                self.btn_assisted_load_video
+            )
+            self.btn_assisted_load_video.style().polish(
+                self.btn_assisted_load_video
+            )
+
+    def _load_video(self):
+        """Load a video exclusively into the Original View source.
+
+        This must not stop, clear, or replace the independent Assisted
+        View video if one is currently active.
+        """
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Upload Original View Video",
+            "",
+            "Video Files (*.mp4 *.avi *.mkv *.mov *.wmv);;All Files (*)",
+            options=QFileDialog.Option.DontUseNativeDialog,
+        )
+
+        if not path:
+            return
+
+        # Replace only the Original View source.
+        # Do NOT touch the independent Assisted View source.
+        self.pipeline.load_video(path)
+
+        # Visual state: mark Original View as active.
+        self.btn_load_video.setProperty("active", "true")
+        self.btn_load_video.setText("VIDEO LOADED")
+        self.btn_load_video.style().unpolish(self.btn_load_video)
+        self.btn_load_video.style().polish(self.btn_load_video)
+
+        # Update Original source status.
+        import os as _os
+        filename = _os.path.basename(path)
+
+        self._s_camera.set_value(filename[:14])
+        self._s_camera.set_color("#10B981")
+        self._s_recording.set_value("VIDEO")
+        self._s_recording.set_color("#0095FF")
+
+        self.status_label.setText(
+            f"Original View loaded: {filename}"
+        )
 
     def _broadcast_camera(self):
         cam_active = self.btn_broadcast_cam.property("active") == "true"
@@ -2827,7 +3326,12 @@ class LiveVideoScreen(QWidget):
         self.btn_broadcast_cam.style().polish(self.btn_broadcast_cam)
 
     def _stop_video(self):
-        """Stop any playing video or camera broadcast and clear canvas to default state."""
+        """Stop both Original View and Assisted View sources."""
+
+        # Stop the independent Assisted View source first.
+        self._stop_assisted_video()
+
+        # Stop the existing Original View / YOLO pipeline source.
         self.pipeline.stop_video()
         if self.broadcaster:
             self.broadcaster.stop()
@@ -2909,6 +3413,7 @@ class LiveVideoScreen(QWidget):
         self.btn_broadcast_cam.style().unpolish(self.btn_broadcast_cam)
         self.btn_broadcast_cam.style().polish(self.btn_broadcast_cam)
 
+
     def _open_assisted_fullscreen(self):
         """Open the current Assisted/YOLO view in fullscreen."""
         if not hasattr(self, "_assisted_fullscreen_viewer"):
@@ -2932,7 +3437,7 @@ class LiveVideoScreen(QWidget):
     def _toggle_yolo(self):
         self._yolo_enabled = not self._yolo_enabled
         self.pipeline.set_detection(self._yolo_enabled)
-        self.pipeline.set_tracking(self._yolo_enabled)
+        self.pipeline.set_tracking(False)
 
         # Update both the global sidebar and the Live Video sidebar.
         main_window = self.window()
@@ -3268,6 +3773,20 @@ class LiveVideoScreen(QWidget):
         self.status_label.setText(f"Session {self._session_id} active - Recording")
         self.message_center.add_message(f"Session {self._session_id} started")
 
+    def closeEvent(self, event):
+        """Release both video sources when Live Video closes."""
+        try:
+            self._stop_assisted_video()
+        except Exception:
+            pass
+
+        try:
+            self.pipeline.stop_video()
+        except Exception:
+            pass
+
+        super().closeEvent(event)
+
     def stop_session(self):
         """End the current session, stop live processing, and export recording."""
 
@@ -3283,12 +3802,15 @@ class LiveVideoScreen(QWidget):
             # the views after the clinical session has ended.
             self._session_active = False
 
-            # Stop the active video/YOLO processing path.
+            # Stop the active Original/YOLO processing path.
             if hasattr(self, 'pipeline'):
                 try:
                     self.pipeline.stop_video()
                 except Exception:
                     pass
+
+            # Global STOP also stops the independent Assisted video.
+            self._stop_assisted_video(clear_view=True)
 
             # Close any fullscreen video viewers.
             for viewer_name in (

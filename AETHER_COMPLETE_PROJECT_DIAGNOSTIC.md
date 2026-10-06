@@ -21,7 +21,7 @@ A comprehensive, read-only diagnostic was conducted across the entire codebase a
 5. **Launcher Unification**: The redundancy between `launch_all.py` and `launchall.py` was resolved; the canonical system launcher is `launch_all.py`.
 6. **Foot Pedals Confirmed UI-Only**: `Clutch`, `Coag`, and `Cut` buttons on the live video screen remain strictly UI visual toggles with zero backend commands, zero broker traffic, and zero robot hardware commands.
 7. **Offline Integrity**: The entire codebase is **100% offline capable**. There are zero outbound HTTP/HTTPS calls, zero CDN imports, zero remote fonts, and zero external cloud database dependencies.
-8. **YOLO Inference Pipeline**: Retains `yolov8x.pt` (136.8 MB) using a dedicated background worker thread (`_InferenceWorker`) with a depth-1 queue to prevent frame lag.
+8. **YOLO Inference Pipeline**: Retains `OLD_MODEL_REMOVED` (136.8 MB) using a dedicated background worker thread (`_InferenceWorker`) with a depth-1 queue to prevent frame lag.
 
 ---
 
@@ -150,7 +150,7 @@ Surgeon Console UI/
 ├── requirements.txt                        [CONFIGURATION]
 ├── theme_manager.py                        [ACTIVE] - Dark/Light runtime palette switcher
 ├── yolo_pipeline.py                        [ACTIVE] - Inference thread & video decoder
-└── yolov8x.pt                              [ACTIVE] - YOLOv8x neural network weights (136.8 MB)
+└── OLD_MODEL_REMOVED                              [ACTIVE] - YOLOv8x neural network weights (136.8 MB)
 ```
 
 ---
@@ -199,7 +199,7 @@ graph TD
         SC[Surgeon Console<br/>main.py]
         VR[Video Receiver<br/>Port 5001]
         PVM[PatientVitalsModel<br/>models/patient_vitals_model.py]
-        YOLO[YOLO Pipeline<br/>yolov8x.pt]
+        YOLO[YOLO Pipeline<br/>OLD_MODEL_REMOVED]
         PS[Patient Sidebar]
         HUD[Live Video HUD]
         LC[Live Control Tab]
@@ -365,7 +365,7 @@ Every runtime metric displayed across the Surgeon Console was audited for its or
 
 ## 10. YOLO Audit
 
-- **Model Specification**: **`yolov8x.pt`** (136.8 MB) retained in the project root directory.
+- **Model Specification**: **`OLD_MODEL_REMOVED`** (136.8 MB) retained in the project root directory.
 - **Execution Architecture**:
   - Offloaded to a dedicated background `QThread` (`_InferenceWorker` in `yolo_pipeline.py`).
   - Worker utilizes a single-element queue (`queue.Queue(maxsize=1)`) with `drop-oldest` semantics: if an inference is currently running when a new video frame arrives, the stale frame is dropped rather than creating pipeline latency.
@@ -519,7 +519,7 @@ Every runtime metric displayed across the Surgeon Console was audited for its or
 - **Offline Independence**: **100% OFFLINE READY**.
 - **Diagnostic Inspection**:
   - Grep search for `http://`, `https://`, CDN links, external APIs, and remote telemetry yielded **0 matches**.
-  - No external model downloads occur at runtime; local `yolov8x.pt` is loaded directly from disk.
+  - No external model downloads occur at runtime; local `OLD_MODEL_REMOVED` is loaded directly from disk.
   - Fonts (Inter, Consolas, JetBrains Mono) use local system/Qt fallbacks.
   - Security PKI generates self-contained local CA and certificates without relying on external certificate authorities.
 - **Verdict**: System operates completely isolated from the Internet.
@@ -663,7 +663,7 @@ Each component was verified for independent startup capability:
 
 ## 28. Resource Audit
 
-- **Model Weights**: `yolov8x.pt` present in project root (136.8 MB). Integrity verified.
+- **Model Weights**: `OLD_MODEL_REMOVED` present in project root (136.8 MB). Integrity verified.
 - **Security Certificates**: `data/certs/` contains complete local PKI (`ca.crt`, `ca.key`, `broker.crt`, `broker.key`, device certificates).
 - **Stylesheets**: `styles/theme.qss` (Dark) and `styles/theme_light.qss` (Light) complete and loaded dynamically.
 - **Assets**: UI icons and medical vector glyphs present in `assets/`.
@@ -741,7 +741,7 @@ Each component was verified for independent startup capability:
 | **Decouple HUD from Video** | Excised QPainter frame copy | `yolo_pipeline.py` | **COMPLETE** | Raw QImage broadcasting untouched |
 | **Foot Pedals UI-Only** | Action toggle buttons | `screens/live_video.py` | **COMPLETE** | No broker or robot backend integration |
 | **YOLO Inference Worker** | `_InferenceWorker` | `yolo_pipeline.py` | **COMPLETE** | Background QThread with drop-oldest queue |
-| **Preserve yolov8x.pt** | Neural weights | `yolov8x.pt` | **COMPLETE** | 136.8 MB model retained unchanged |
+| **Preserve OLD_MODEL_REMOVED** | Neural weights | `OLD_MODEL_REMOVED` | **COMPLETE** | 136.8 MB model retained unchanged |
 | **mTLS 1.3 Communication** | `TLSManager` | `shared_networking/tls.py` | **COMPLETE** | Port 5000 & 5001 mTLS enforced |
 | **RBAC / Topic ACLs** | SQLite ACL Table | `shared_networking/broker.py` | **COMPLETE** | Tested in `test_broker_security.py` |
 | **Zero Cloud Dependencies** | Offline architecture | Global codebase | **COMPLETE** | 0 external network requests |
@@ -755,7 +755,7 @@ Each component was verified for independent startup capability:
 | **Authentication & RBAC** | **COMPLETE** | Argon2id, device binding, 2h session lifecycle |
 | **Patient Vitals Integration** | **COMPLETE** | 1Hz Data Generator → Model → Sidebar & HUD |
 | **Live Video & HUD** | **COMPLETE** | Dedicated TCP 5001 receiver + floating translucent HUD |
-| **YOLO Pipeline** | **COMPLETE** | Background thread, drop-oldest queue, yolov8x.pt |
+| **YOLO Pipeline** | **COMPLETE** | Background thread, drop-oldest queue, OLD_MODEL_REMOVED |
 | **Robot Telemetry** | **COMPLETE** | 10Hz kinematics, tool coordinates, 3DOF simulator |
 | **Alert Notification System** | **COMPLETE** | Dynamic generation, severity filtering, UI buffer |
 | **Inter-OR Communications** | **COMPLETE** | Broker-routed chat & status broadcasts |
@@ -805,7 +805,7 @@ Each component was verified for independent startup capability:
 
 ## 39. Top 10 Remaining Issues
 
-1. **GPU Acceleration Optimization**: Provide explicit TensorRT / ONNX Runtime export for `yolov8x.pt` to drop inference latency below 15 ms on clinical workstation hardware.
+1. **GPU Acceleration Optimization**: Provide explicit TensorRT / ONNX Runtime export for `OLD_MODEL_REMOVED` to drop inference latency below 15 ms on clinical workstation hardware.
 2. **Pre-op Planning Real DICOM Engine**: Transition `screens/preop_planning.py` from mock rendering slices to a hardware-accelerated 3D volumetric DICOM loader (e.g. VTK or PyVista).
 3. **Full Video Recording Pipeline**: Complete the H.264/MP4 container muxer for surgical session recording in `screens/live_video.py`.
 4. **Deprecate Legacy Simulators in Robot-Console**: Cleanly deprecate or remove `Robot-Console/services/telemetry_generator.py` and `alert_generator.py` to avoid architectural confusion.

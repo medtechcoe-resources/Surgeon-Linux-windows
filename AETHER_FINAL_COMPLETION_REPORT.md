@@ -16,7 +16,7 @@ Key results:
 2. **End-to-End Data Generator Flow**: Real simulated vitals flow from `Data-Generator` → `Broker` → `ConnectionManager` → `main.py` message router → `PatientVitalsModel` → `PatientSidebar` & `LiveVideoScreen` HUD.
 3. **Hardcoded Vitals Eliminated**: Removed all static production values (`74`, `98`, `118/74`, `36.8`). Initial state renders cleanly as `--` / `NO DATA`.
 4. **Live Video HUD Redesign**: Replaced the large 200×140 opaque QPainter card burned into video frames with a compact (~286×62 px), translucent (~72% opacity) floating overlay widget in the video canvas container, positioned at top-left (`16, 16`).
-5. **YOLO Model & Pipeline Unchanged**: Retained existing `yolov8x.pt` intact. AI inference worker thread and video streaming are completely decoupled from vitals overlay.
+5. **YOLO Model & Pipeline Unchanged**: Retained existing `OLD_MODEL_REMOVED` intact. AI inference worker thread and video streaming are completely decoupled from vitals overlay.
 6. **Foot Pedals Confirmed UI-Only**: `Clutch`, `Coag`, and `Cut` remain strictly visual operator buttons with no backend commands or broker routing.
 7. **Comprehensive Verification**: 54/54 automated tests passing with zero regressions.
 
@@ -154,7 +154,7 @@ Patient Sidebar (PatientSidebar)   Live Video HUD (_VitalsHUD)
 
 ## YOLO PIPELINE
 
-- **Model Specification**: Existing `yolov8x.pt` retained without modification.
+- **Model Specification**: Existing `OLD_MODEL_REMOVED` retained without modification.
 - **No Replacement**: No model replacement, retraining, download, or surgical model additions were performed in this phase.
 - **Inference Architecture**:
   - Retained dedicated worker thread (`QThread` / `_InferenceWorker`) and non-blocking inference queue established in previous audit fixes.

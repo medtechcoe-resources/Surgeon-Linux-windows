@@ -18,8 +18,8 @@ However, several critical and high-priority architectural and functional issues 
 1. **YOLO Inference on Qt GUI Main Thread**: The YOLO detection pipeline (`yolo_pipeline.py`) runs heavy neural network inference (YOLOv8x, ~68M parameters) synchronously inside the Qt event loop (`_process_frame` on QTimer and `process_incoming_qimage`), causing UI freezing, sluggish controls, and frame drops when detection is active.
 2. **Disconnected Message Routing in Surgeon Console**: In `main.py`, the incoming message handler `_on_message_received` is an empty `pass` stub. Consequently, real-time telemetry, patient vitals, and alert packets arriving from the broker are never routed to `PatientSidebar` or `LiveControlScreen`.
 3. **Static Dummy Data in Core UI Components**: `PatientSidebar` and `LiveControlScreen` contain hardcoded static dummy values (e.g. fixed heart rate, blood pressure, end-effector coordinates) with no setter methods or listeners to reflect live incoming broker data.
-4. **COCO Pretrained Model vs Surgical Tool Detection**: The model file `yolov8x.pt` is a standard 80-class COCO object detection model (person, car, dog, etc.) rather than a specialized medical/surgical instrument detection model.
-5. **Dead Code & Unused Screens**: Three entire screen implementations (`screens/end_effector.py`, `screens/postop_analytics.py`, `screens/telemetry.py`) and a duplicate 136.8 MB model file (`Robot-Console/yolov8x.pt`) are unreferenced and dead.
+4. **COCO Pretrained Model vs Surgical Tool Detection**: The model file `OLD_MODEL_REMOVED` is a standard 80-class COCO object detection model (person, car, dog, etc.) rather than a specialized medical/surgical instrument detection model.
+5. **Dead Code & Unused Screens**: Three entire screen implementations (`screens/end_effector.py`, `screens/postop_analytics.py`, `screens/telemetry.py`) and a duplicate 136.8 MB model file (`Robot-Console/OLD_MODEL_REMOVED`) are unreferenced and dead.
 6. **UI Action Stubs**: Live Video foot pedals (Clutch, Coag, Cut) and Video Recording controls are visual-only toggles with no backend connection or video recording implementation.
 7. **Stale Cryptographic References**: The Settings screen displays "Fernet (AES-128-CBC + HMAC)" even though application-level Fernet was replaced with mTLS (TLS 1.3).
 
@@ -33,10 +33,10 @@ However, several critical and high-priority architectural and functional issues 
 | **CRIT-02** | Message routing stub in Surgeon Console entry point | `main.py:134-144` | **CRITICAL** | `self._conn_manager.message_received.connect(self._on_message_received)` connects to `def _on_message_received(self, topic, payload): pass` | Telemetry, vitals, alerts, and system status packets from Data Generator / Robot are completely ignored by the main UI | Implement message routing to update `PatientSidebar`, `StatusBar`, `LiveControlScreen`, and `Header` |
 | **HIGH-01** | `PatientSidebar` vitals and system status are 100% hardcoded | `widgets/patient_sidebar.py:84-234` | **HIGH** | Vitals and status labels are created as local variables in `__init__` with no instance variables or update methods | Surgeon console displays static simulated vitals (HR: 74, SpO2: 98) regardless of actual patient status | Refactor `PatientSidebar` to store label references and expose `update_vitals(data)` and `update_status(data)` methods |
 | **HIGH-02** | `LiveControlScreen` telemetry and alerts are hardcoded | `screens/live_control.py:390-422`, `510-550` | **HIGH** | Left manipulator telemetry values and right active alerts are static mock strings; no broker data connection | Surgeon console displays static telemetry and alerts rather than live robot states | Expose update methods `update_telemetry(payload)` and `update_alerts(payload)` connected to `ConnectionManager` |
-| **HIGH-03** | Generic 80-class COCO YOLO model used for surgical detection | `yolov8x.pt`, `yolo_pipeline.py:115` | **HIGH** | `model.names` contains COCO classes (`person`, `bicycle`, `car`, ...) instead of surgical tools (`scalpel`, `forceps`, `retractor`) | Model attempts to classify surgical instruments as COCO objects, resulting in incorrect labels or zero detections | Train or load a fine-tuned YOLO surgical instrument model, and configure custom tool class names |
+| **HIGH-03** | Generic 80-class COCO YOLO model used for surgical detection | `OLD_MODEL_REMOVED`, `yolo_pipeline.py:115` | **HIGH** | `model.names` contains COCO classes (`person`, `bicycle`, `car`, ...) instead of surgical tools (`scalpel`, `forceps`, `retractor`) | Model attempts to classify surgical instruments as COCO objects, resulting in incorrect labels or zero detections | Train or load a fine-tuned YOLO surgical instrument model, and configure custom tool class names |
 | **HIGH-04** | Foot pedals and video recording are non-functional visual stubs | `screens/live_video.py:847-862`, `1134-1138`, `1181-1185` | **HIGH** | `_toggle_action` only toggles CSS properties; `_blink_rec` only toggles label visibility without video writer | Surgeon actions (clutch, coagulation, cut, recording) have no backend effect | Implement backend signals / broker command publishing for foot pedals and `cv2.VideoWriter` for recording |
 | **HIGH-05** | Silent exception swallowing on configuration loading | `screens/live_control.py:598-600` | **HIGH** | `except Exception as e: pass` silently suppresses corrupt or invalid JSON config errors | User receives no feedback when JSON joint configuration fails to load | Replace `pass` with error logging and user notification via `QMessageBox` or status bar |
-| **MED-01** | Duplicate 136.8 MB YOLO weight file in `Robot-Console/` | `Robot-Console/yolov8x.pt` | **MEDIUM** | `Robot-Console/` contains an unreferenced copy of `yolov8x.pt` | Wastes 136.8 MB disk space and repository bandwidth | Remove duplicate file and reference root model if needed |
+| **MED-01** | Duplicate 136.8 MB YOLO weight file in `Robot-Console/` | `Robot-Console/OLD_MODEL_REMOVED` | **MEDIUM** | `Robot-Console/` contains an unreferenced copy of `OLD_MODEL_REMOVED` | Wastes 136.8 MB disk space and repository bandwidth | Remove duplicate file and reference root model if needed |
 | **MED-02** | Dead screen modules in `screens/` directory | `screens/end_effector.py`, `screens/postop_analytics.py`, `screens/telemetry.py` | **MEDIUM** | Modules are never imported or registered in `main.py` or navigation bar | Technical debt, confusion for maintainers, unmaintained code | Archive or integrate screens into the navigation hierarchy |
 | **MED-03** | Stale Fernet encryption reference in Settings UI | `screens/settings.py:244-246` | **MEDIUM** | `_enc_algo_lbl` hardcoded to `"Fernet (AES-128-CBC + HMAC)"` | Misleads users and auditors regarding current mTLS security architecture | Update label to reflect TLS 1.3 / mTLS AES-256-GCM transport encryption |
 | **MED-04** | Hardcoded vitals overlay in YOLO pipeline | `yolo_pipeline.py:356-363`, `486-494` | **MEDIUM** | Hardcoded `vitals = [("HR", "74 bpm"), ("SpO2", "98%"), ...]` in frame drawing routines | Vitals overlay on video does not match incoming patient telemetry | Pass live vitals dictionary from connection manager to `YoloPipeline` |
@@ -52,8 +52,8 @@ However, several critical and high-priority architectural and functional issues 
 | `theme_manager.py:141` | `styles/theme.qss`, `styles/theme_light.qss` | **EXISTS** | Resolved via `_BASE_DIR/styles/theme.qss` (22 KB) | Working properly |
 | `shared_networking/config.py:39` | `data/aether.db` | **EXISTS** | Verified at `data/aether.db` (73 KB) | Working properly |
 | `shared_networking/config.py:40` | `data/certs/*.crt`, `*.key` | **EXISTS** | Verified CA, broker, data_generator, observer, robot, surgeon certs | Working properly |
-| `yolo_pipeline.py:115` | `yolov8x.pt` | **EXISTS** | Verified in project root (136.8 MB) | Working properly |
-| `Robot-Console/yolov8x.pt` | `Robot-Console/yolov8x.pt` | **DUPLICATE / UNUSED** | Exact binary copy of root `yolov8x.pt` | Unused by Robot-Console; can be safely removed |
+| `yolo_pipeline.py:115` | `OLD_MODEL_REMOVED` | **EXISTS** | Verified in project root (136.8 MB) | Working properly |
+| `Robot-Console/OLD_MODEL_REMOVED` | `Robot-Console/OLD_MODEL_REMOVED` | **DUPLICATE / UNUSED** | Exact binary copy of root `OLD_MODEL_REMOVED` | Unused by Robot-Console; can be safely removed |
 
 ---
 
@@ -64,7 +64,7 @@ However, several critical and high-priority architectural and functional issues 
 | `screens/end_effector.py` | `class EndEffectorScreen` | **A. Definitely dead** | Never imported across entire codebase; navigation stack only registers 5 screens (`preop`, `live_video`, `live_control`, `settings`, `comm_center`) |
 | `screens/postop_analytics.py` | `class PostopAnalyticsScreen` | **A. Definitely dead** | Never imported across entire codebase; standalone analytics prototype not hooked into UI |
 | `screens/telemetry.py` | `class TelemetryScreen` | **A. Definitely dead** | Never imported across entire codebase; superseded by `screens/live_control.py` |
-| `Robot-Console/yolov8x.pt` | File asset (136.8 MB) | **A. Definitely dead** | Unreferenced anywhere in `Robot-Console/` Python code |
+| `Robot-Console/OLD_MODEL_REMOVED` | File asset (136.8 MB) | **A. Definitely dead** | Unreferenced anywhere in `Robot-Console/` Python code |
 | `Robot-Console/services/telemetry_generator.py` | `class TelemetryGenerator` | **B. Probably dead** | Superseded by `Data-Generator/generators/robot_telemetry_generator.py`; retained only for legacy direct mode |
 | `Robot-Console/services/alert_generator.py` | `class AlertGenerator` | **B. Probably dead** | Superseded by `Data-Generator/generators/alert_generator.py` |
 | `Robot-Console/networking/tcp_client.py:161-175` | `send_data()`, `reconnect()` | **B. Probably dead** | Direct TCP client superseded by `PubSubBridge` in standard operating mode |
@@ -77,8 +77,8 @@ However, several critical and high-priority architectural and functional issues 
 ## 5. Duplicate Code & Redundancies
 
 1. **YOLO Model Weights**:
-   - `yolov8x.pt` (136,890,692 bytes) in workspace root
-   - `Robot-Console/yolov8x.pt` (136,890,692 bytes) in `Robot-Console/` (100% duplicate)
+   - `OLD_MODEL_REMOVED` (136,890,692 bytes) in workspace root
+   - `Robot-Console/OLD_MODEL_REMOVED` (136,890,692 bytes) in `Robot-Console/` (100% duplicate)
 2. **Alert Generation Logic**:
    - `Data-Generator/generators/alert_generator.py`
    - `Robot-Console/services/alert_generator.py` (Duplicate rule/message definitions)
@@ -150,7 +150,7 @@ However, several critical and high-priority architectural and functional issues 
 
 ## 8. AI / YOLO Audit
 
-- **Model Specification**: YOLOv8x (`yolov8x.pt`, 136.8 MB).
+- **Model Specification**: YOLOv8x (`OLD_MODEL_REMOVED`, 136.8 MB).
 - **Target Task**: Object detection and tracking (`model.track(frame, persist=True)`).
 - **Class Mismatch**: The loaded model uses COCO dataset classes (80 standard classes). Surgical instrument detection requires fine-tuned weights trained on instruments (graspers, monopolar curved scissors, bipolar forceps, clip appliers, needle drivers, suction irrigators).
 - **Confidence & IoU**: Defaults to Ultralytics standard thresholds (conf=0.25, iou=0.7).
@@ -311,7 +311,7 @@ TOTAL ISSUES IDENTIFIED: 11
   LOW:      1
   INFO:     1
 
-BROKEN / DEAD ASSETS:  1 (Duplicate 136.8 MB yolov8x.pt)
+BROKEN / DEAD ASSETS:  1 (Duplicate 136.8 MB OLD_MODEL_REMOVED)
 DEAD CODE MODULES:     3 (end_effector.py, postop_analytics.py, telemetry.py)
 SECURITY STATUS:       mTLS Verified, bcrypt Auth Verified, Clean SQL
 TEST SUITE:            35 / 35 Passed (100%)
@@ -332,7 +332,7 @@ TEST SUITE:            35 / 35 Passed (100%)
 6. **Foot Pedal & Action Integration**: Wire foot pedal controls to publish broker control events and implement video recording via `cv2.VideoWriter`.
 
 ### Phase 3 — Dead Code & Asset Cleanup
-7. **Remove Duplicate Model**: Delete redundant `Robot-Console/yolov8x.pt` (saving 136.8 MB).
+7. **Remove Duplicate Model**: Delete redundant `Robot-Console/OLD_MODEL_REMOVED` (saving 136.8 MB).
 8. **Archive Dead Screens**: Cleanly deprecate or integrate `screens/end_effector.py`, `screens/postop_analytics.py`, and `screens/telemetry.py`.
 9. **Update Settings UI**: Correct encryption label in `screens/settings.py` from Fernet to TLS 1.3 / mTLS.
 

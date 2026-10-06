@@ -41,6 +41,6 @@
 2. Missing message dispatch in `main.py:_on_message_received` (pass stub).
 3. Unconnected telemetry displays in `screens/live_control.py`.
 4. Silent exception handling `except: pass` in `screens/live_control.py`.
-5. Duplicate unreferenced file `Robot-Console/yolov8x.pt` (136.8 MB).
+5. Duplicate unreferenced file `Robot-Console/OLD_MODEL_REMOVED` (136.8 MB).
 6. Unused dead screen files in `screens/` (`end_effector.py`, `postop_analytics.py`, `telemetry.py`).
 7. Stale Fernet text in `screens/settings.py`.

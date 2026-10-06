@@ -87,5 +87,5 @@ pytest -v
 ## 👁️ Computer Vision & YOLO Notes
 
 The live video pipeline integrates local offline YOLO inference via `ultralytics`.
-- The bundled `yolov8x.pt` is the standard COCO 80-class pre-trained model (classes: `person`, `cup`, `scissors`, etc.).
-- For surgical deployment, swap `yolov8x.pt` with custom-trained weights (e.g. EndoVis / Cholec80 surgical instrument datasets) by placing the trained `.pt` file in the project root or updating the model path in `screens/live_video.py`.
+- The bundled `OLD_MODEL_REMOVED` is the standard COCO 80-class pre-trained model (classes: `person`, `cup`, `scissors`, etc.).
+- For surgical deployment, swap `OLD_MODEL_REMOVED` with custom-trained weights (e.g. EndoVis / Cholec80 surgical instrument datasets) by placing the trained `.pt` file in the project root or updating the model path in `screens/live_video.py`.

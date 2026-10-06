@@ -1040,10 +1040,12 @@ class MedicalImageCard(QFrame):
         self.annotate_btn = self._make_icon_button("✎", "ANNOTATE")
         self.fullscreen_btn = self._make_icon_button("⛶", "FULL SCREEN")
         self.load_btn = self._make_icon_button("↥", "LOAD IMAGE")
+        self.remove_btn = self._make_icon_button("×", "REMOVE IMAGE")
 
         action_row.addWidget(self.annotate_btn)
         action_row.addWidget(self.fullscreen_btn)
         action_row.addWidget(self.load_btn)
+        action_row.addWidget(self.remove_btn)
         layout.addLayout(action_row)
 
         self.annotate_btn.clicked.connect(
@@ -1055,6 +1057,7 @@ class MedicalImageCard(QFrame):
         self.load_btn.clicked.connect(
             lambda: self.load_requested.emit(self.study_name)
         )
+        self.remove_btn.clicked.connect(self.clear_image)
 
         self.setStyleSheet(
             f"""
@@ -1114,12 +1117,32 @@ class MedicalImageCard(QFrame):
             if not pixmap.isNull():
                 self.pixmap = pixmap
                 self.status_text("IMAGE LOADED", GREEN)
+                self.remove_btn.setEnabled(True)
                 self._update_preview()
                 return
 
         self.pixmap = QPixmap()
         self.frames = []
+        self.annotations = []
+        self.remove_btn.setEnabled(False)
         self.status_text("NO IMAGE", TEXT_MUTED)
+        self.image_label.setPixmap(QPixmap())
+        self.image_label.setText("NO IMAGE")
+        self.image_label.setStyleSheet(
+            f"QLabel {{ background: #090D12; color: {TEXT_DIM}; border: 1px dashed {BORDER_HEAVY}; border-radius: 5px; font-size: 9px; font-weight: 800; }}"
+        )
+
+    def clear_image(self):
+        """Remove the image from this card without deleting the source file."""
+        self.image_path = None
+        self.pixmap = QPixmap()
+        self.frames = []
+        self.frame_index = 0
+        self.annotations = []
+
+        self.remove_btn.setEnabled(False)
+        self.status_text("NO IMAGE", TEXT_MUTED)
+
         self.image_label.setPixmap(QPixmap())
         self.image_label.setText("NO IMAGE")
         self.image_label.setStyleSheet(
@@ -1133,6 +1156,7 @@ class MedicalImageCard(QFrame):
         self.frames = frames
         self.frame_index = 0
         self.pixmap = frames[0]
+        self.remove_btn.setEnabled(True)
         self.status_text(f"DICOM • {len(frames)} FRAME{'S' if len(frames) != 1 else ''}", GREEN)
         self.image_label.setText("")
         self.image_label.setStyleSheet(
@@ -1471,18 +1495,92 @@ class PdfReportsDialog(QDialog):
         self._refresh()
 
     def _refresh(self):
+        self.list_widget.blockSignals(True)
         self.list_widget.clear()
 
+        for path in self.reports:
+            item = QListWidgetItem()
+            item.setData(Qt.ItemDataRole.UserRole, path)
+            item.setSizeHint(QSize(0, 38))
+            self.list_widget.addItem(item)
+
+            row = QWidget()
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(8, 2, 4, 2)
+            row_layout.setSpacing(6)
+
+            name_label = QLabel(Path(path).name)
+            name_label.setStyleSheet(
+                f"color: {TEXT_SECONDARY}; font-size: 12px;"
+            )
+            name_label.setToolTip(path)
+            row_layout.addWidget(name_label, 1)
+
+            remove_btn = QToolButton()
+            remove_btn.setText("×")
+            remove_btn.setToolTip("REMOVE PDF")
+            remove_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            remove_btn.setFixedSize(28, 24)
+            remove_btn.setStyleSheet(
+                f"""
+                QToolButton {{
+                    background: {INPUT};
+                    color: {TEXT_SECONDARY};
+                    border: 1px solid {BORDER};
+                    border-radius: 5px;
+                    font-size: 16px;
+                    font-weight: 800;
+                }}
+                QToolButton:hover {{
+                    background: #202938;
+                    color: {TEXT};
+                    border-color: {BLUE};
+                }}
+                QToolButton:pressed {{
+                    background: {PANEL};
+                }}
+                """
+            )
+            remove_btn.clicked.connect(
+                lambda _checked=False, report_path=path:
+                self._remove_pdf(report_path)
+            )
+
+            row_layout.addWidget(remove_btn)
+            self.list_widget.setItemWidget(item, row)
+
+        self.list_widget.blockSignals(False)
+
+        count = len(self.reports)
+        self.count_label.setText(
+            f"{count} FILE" if count == 1 else f"{count} FILES"
+        )
+
         if not self.reports:
-            empty = QListWidgetItem("NO REPORTS LOADED")
-            empty.setForeground(QColor(TEXT_MUTED))
-            self.list_widget.addItem(empty)
+            self._clear_selection()
+        elif self.list_widget.currentRow() < 0:
+            self.list_widget.setCurrentRow(0)
+
+    def _remove_pdf(self, path: str):
+        """Remove a PDF from the Pre-Op list without deleting the source file."""
+        if path not in self.reports:
             return
 
-        for path in self.reports:
-            item = QListWidgetItem(Path(path).name)
-            item.setData(Qt.ItemDataRole.UserRole, path)
-            self.list_widget.addItem(item)
+        self.reports.remove(path)
+
+        # If this PDF is currently selected, clear the viewer/selection.
+        if self._selected_path == path or self._document_path == path:
+            self._clear_selection()
+
+            if self.pdf_view is not None:
+                self.pdf_view.setVisible(False)
+
+            if self._document is not None:
+                self._document.close()
+
+        # Keep the actual PDF file on disk.
+        self.reports_changed.emit(self.reports)
+        self._refresh()
 
     def _add_pdf(self):
         path, _ = QFileDialog.getOpenFileName(

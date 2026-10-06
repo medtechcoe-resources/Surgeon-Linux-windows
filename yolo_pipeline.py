@@ -61,16 +61,47 @@ class DetectionStats:
 
 
 class YoloInferenceWorker:
-    """Dedicated background worker for executing YOLO inference without blocking the GUI thread."""
+    """
+    Shared YOLO inference worker with independent queues for each source.
+
+    There is still only ONE YOLO model in GPU memory.
+
+    Sources:
+        main     -> Original/global video
+        assisted -> independent Assisted View video
+
+    Each source has its own one-frame queue so the Original video
+    cannot starve the Assisted video.
+    """
 
     def __init__(self):
         self._model = None
         self._running = False
         self._thread = None
-        self._queue = queue.Queue(maxsize=1)
+
+        # IMPORTANT:
+        # Separate queues prevent the two video sources from fighting
+        # over one queue(maxsize=1).
+        self._queues = {
+            "main": queue.Queue(maxsize=1),
+            "assisted": queue.Queue(maxsize=1),
+        }
+
         self._lock = threading.Lock()
-        self._latest_detections = []
-        self._latest_stats = DetectionStats()
+
+        self._latest_detections = {
+            "main": [],
+            "assisted": [],
+        }
+
+        self._latest_stats = {
+            "main": DetectionStats(),
+            "assisted": DetectionStats(),
+        }
+
+        # Round-robin scheduling prevents one source from starving
+        # the other source.
+        self._next_source = "main"
 
     def set_model(self, model):
         with self._lock:
@@ -79,49 +110,125 @@ class YoloInferenceWorker:
     def start(self):
         if self._running:
             return
+
         self._running = True
-        self._thread = threading.Thread(target=self._worker_loop, daemon=True, name="YoloInferenceWorker")
+
+        self._thread = threading.Thread(
+            target=self._worker_loop,
+            daemon=True,
+            name="YoloInferenceWorker",
+        )
+
         self._thread.start()
 
     def stop(self):
         self._running = False
-        try:
-            self._queue.put_nowait(None)
-        except queue.Full:
-            pass
-        if self._thread and self._thread != threading.current_thread() and self._thread.is_alive():
+
+        # Wake the worker if it is waiting.
+        for source_id in ("main", "assisted"):
+            try:
+                self._queues[source_id].put_nowait(None)
+            except queue.Full:
+                pass
+
+        if (
+            self._thread
+            and self._thread != threading.current_thread()
+            and self._thread.is_alive()
+        ):
             self._thread.join(timeout=1.0)
+
         self._thread = None
 
-    def submit_frame(self, frame_bgr, tracking_enabled: bool):
+    def submit_frame(
+        self,
+        frame_bgr,
+        tracking_enabled: bool,
+        source_id="main",
+    ):
         if not self._running or self._model is None:
             return
-        # Drop older pending frame if inference is currently busy
+
+        if source_id not in self._queues:
+            source_id = "main"
+
+        q = self._queues[source_id]
+
+        # Keep only the newest frame for this source.
         try:
-            self._queue.get_nowait()
+            q.get_nowait()
         except queue.Empty:
             pass
+
         try:
-            self._queue.put_nowait((frame_bgr, tracking_enabled))
+            q.put_nowait(
+                (
+                    frame_bgr,
+                    tracking_enabled,
+                    source_id,
+                )
+            )
         except queue.Full:
             pass
 
-    def get_latest_results(self):
-        with self._lock:
-            return list(self._latest_detections), self._latest_stats
+    def get_latest_results(self, source_id="main"):
+        if source_id not in self._latest_detections:
+            source_id = "main"
 
-    def _worker_loop(self):
-        while self._running:
+        with self._lock:
+            return (
+                list(self._latest_detections[source_id]),
+                self._latest_stats[source_id],
+            )
+
+    def _get_next_item(self):
+        """
+        Fair round-robin scheduling.
+
+        Always check both queues. Prefer the next source first, then
+        fall back to the other source if it has a frame waiting.
+        """
+
+        order = (
+            ("main", "assisted")
+            if self._next_source == "main"
+            else ("assisted", "main")
+        )
+
+        for source_id in order:
+            q = self._queues[source_id]
+
             try:
-                item = self._queue.get(timeout=0.1)
+                item = q.get_nowait()
             except queue.Empty:
                 continue
 
-            if item is None or not self._running:
-                break
+            # Alternate priority for the next inference.
+            self._next_source = (
+                "assisted"
+                if source_id == "main"
+                else "main"
+            )
 
-            frame_bgr, tracking_enabled = item
+            return item
+
+        return None
+
+    def _worker_loop(self):
+        while self._running:
+            item = self._get_next_item()
+
+            if item is None:
+                time.sleep(0.002)
+                continue
+
+            frame_bgr, tracking_enabled, source_id = item
+
+            if frame_bgr is None:
+                continue
+
             inference_start = time.time()
+
             detections = []
             stats = DetectionStats()
 
@@ -129,57 +236,126 @@ class YoloInferenceWorker:
                 with self._lock:
                     model = self._model
 
-                if model is not None:
-                    if tracking_enabled:
-                        results = model.track(frame_bgr, persist=True, tracker="bytetrack.yaml", imgsz=512, conf=0.25, device=0, verbose=False)
-                    else:
-                        results = model(frame_bgr, verbose=False)
+                if model is None:
+                    continue
 
-                    stats.inference_ms = (time.time() - inference_start) * 1000
-
-                    if results and len(results) > 0:
-                        result = results[0]
-                        boxes = result.boxes
-                        if boxes is not None and len(boxes) > 0:
-                            masks_xy = result.masks.xy if result.masks is not None else []
-
-                            for idx, box in enumerate(boxes):
-                                cls_id = int(box.cls[0])
-                                conf = float(box.conf[0])
-                                x1, y1, x2, y2 = box.xyxy[0].tolist()
-                                class_name = model.names.get(cls_id, f"class_{cls_id}")
-                                track_id = int(box.id[0]) if box.id is not None else None
-
-                                mask = None
-                                if idx < len(masks_xy):
-                                    mask = masks_xy[idx].copy()
-
-                                detections.append(DetectionResult(
-                                    class_name, conf, x1, y1, x2, y2, track_id, mask
-                                ))
-
-                    stats.objects_detected = len(detections)
-                    stats.mean_confidence = (
-                        sum(d.confidence for d in detections) / len(detections) * 100
-                        if detections else 0.0
+                if tracking_enabled:
+                    results = model.track(
+                        frame_bgr,
+                        persist=True,
+                        tracker="bytetrack.yaml",
+                        imgsz=512,
+                        conf=0.25,
+                        device="cuda:0",
+                        verbose=False,
                     )
-                    stats.tracking_active = tracking_enabled
-                    for d in detections:
-                        stats.class_counts[d.class_name] = stats.class_counts.get(d.class_name, 0) + 1
+                else:
+                    results = model(
+                        frame_bgr,
+                        imgsz=512,
+                        conf=0.25,
+                        device="cuda:0",
+                        verbose=False,
+                    )
+
+                stats.inference_ms = (
+                    time.time() - inference_start
+                ) * 1000
+
+                if results and len(results) > 0:
+                    result = results[0]
+                    boxes = result.boxes
+
+                    if boxes is not None and len(boxes) > 0:
+                        masks_xy = (
+                            result.masks.xy
+                            if result.masks is not None
+                            else []
+                        )
+
+                        for idx, box in enumerate(boxes):
+                            cls_id = int(box.cls[0])
+                            conf = float(box.conf[0])
+
+                            x1, y1, x2, y2 = (
+                                box.xyxy[0].tolist()
+                            )
+
+                            class_name = model.names.get(
+                                cls_id,
+                                f"class_{cls_id}",
+                            )
+
+                            track_id = (
+                                int(box.id[0])
+                                if box.id is not None
+                                else None
+                            )
+
+                            mask = None
+
+                            if idx < len(masks_xy):
+                                mask = masks_xy[idx].copy()
+
+                            detections.append(
+                                DetectionResult(
+                                    class_name,
+                                    conf,
+                                    x1,
+                                    y1,
+                                    x2,
+                                    y2,
+                                    track_id,
+                                    mask,
+                                )
+                            )
+
+                stats.objects_detected = len(detections)
+
+                stats.mean_confidence = (
+                    (
+                        sum(
+                            d.confidence
+                            for d in detections
+                        )
+                        / len(detections)
+                        * 100
+                    )
+                    if detections
+                    else 0.0
+                )
+
+                stats.tracking_active = tracking_enabled
+
+                for d in detections:
+                    stats.class_counts[d.class_name] = (
+                        stats.class_counts.get(
+                            d.class_name,
+                            0,
+                        )
+                        + 1
+                    )
 
             except Exception as e:
-                log.warning(f"Background YOLO inference error: {e}")
-                stats.inference_ms = (time.time() - inference_start) * 1000
+                log.warning(
+                    f"Background YOLO inference error "
+                    f"[{source_id}]: {e}"
+                )
 
+                stats.inference_ms = (
+                    time.time() - inference_start
+                ) * 1000
+
+            # Store result ONLY for the source that produced it.
             with self._lock:
-                self._latest_detections = detections
-                self._latest_stats = stats
-
+                self._latest_detections[source_id] = detections
+                self._latest_stats[source_id] = stats
 
 class YoloPipeline(QObject):
     """Thread-safe YOLO pipeline with background inference and PyQt6 signals."""
 
-    frame_ready = pyqtSignal(QImage)       # Processed frame (with or without local detections)
+    frame_ready = pyqtSignal(QImage)       # Processed Original/main frame
+    assisted_frame_ready = pyqtSignal(QImage)  # Processed independent Assisted frame
     raw_frame_ready = pyqtSignal(QImage)   # Clean source frame (without burnt-in overlays, for broadcast)
     stats_updated = pyqtSignal(object)     # DetectionStats
     status_changed = pyqtSignal(str)       # Status message
@@ -233,7 +409,7 @@ class YoloPipeline(QObject):
 
     # ── Model Management ──────────────────────────────────────────
 
-    def load_model(self, model_name="models/surgical/best.pt"):
+    def load_model(self, model_name="models/surgical/yolov8s_cholec80.pt"):
         """Load YOLO model in background thread and initialize inference worker."""
         if self._model or self._model_loading:
             return
@@ -465,8 +641,14 @@ class YoloPipeline(QObject):
         stats = DetectionStats()
 
         if self._detection_enabled and self._model:
-            self._worker.submit_frame(frame, self._tracking_enabled)
-            detections, worker_stats = self._worker.get_latest_results()
+            self._worker.submit_frame(
+                frame,
+                self._tracking_enabled,
+                source_id="main",
+            )
+            detections, worker_stats = self._worker.get_latest_results(
+                source_id="main"
+            )
             stats.objects_detected = worker_stats.objects_detected
             stats.mean_confidence = worker_stats.mean_confidence
             stats.inference_ms = worker_stats.inference_ms
@@ -491,7 +673,8 @@ class YoloPipeline(QObject):
         # Make copy of raw_qimg for local display with overlays
         display_qimg = raw_qimg.copy() if detections else raw_qimg
 
-        # Draw detections and segmentation masks locally if enabled
+        # TEMPORARILY HIDDEN: YOLO visual overlay disabled.
+        # Detection inference and statistics remain active.
         if detections:
             painter = QPainter(display_qimg)
             painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -546,10 +729,30 @@ class YoloPipeline(QObject):
         self.frame_ready.emit(display_qimg)
         self.stats_updated.emit(stats)
 
-    def process_incoming_qimage(self, qimage: QImage):
-        """Process an incoming network frame without blocking the GUI thread on AI inference."""
+    def process_incoming_qimage(
+        self,
+        qimage: QImage,
+        source_id="main",
+        output_signal=None,
+    ):
+        """
+        Process a QImage through the shared YOLO worker.
+
+        source_id:
+            "main"     -> Original/normal pipeline source
+            "assisted" -> independent Assisted View upload
+
+        output_signal:
+            Signal receiving the rendered result. Defaults to frame_ready.
+        """
         if qimage is None or qimage.isNull():
             return
+
+        if source_id not in ("main", "assisted"):
+            source_id = "main"
+
+        if output_signal is None:
+            output_signal = self.frame_ready
 
         self._current_frame += 1
         self._video_width = qimage.width()
@@ -568,8 +771,14 @@ class YoloPipeline(QObject):
                 arr = np.frombuffer(ptr, np.uint8).reshape((h, w, 3))
                 frame = cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
 
-                self._worker.submit_frame(frame, self._tracking_enabled)
-                detections, worker_stats = self._worker.get_latest_results()
+                self._worker.submit_frame(
+                    frame,
+                    self._tracking_enabled,
+                    source_id=source_id,
+                )
+                detections, worker_stats = self._worker.get_latest_results(
+                    source_id=source_id
+                )
                 stats.objects_detected = worker_stats.objects_detected
                 stats.mean_confidence = worker_stats.mean_confidence
                 stats.inference_ms = worker_stats.inference_ms
@@ -591,7 +800,8 @@ class YoloPipeline(QObject):
         # Make copy of qimage for drawing overlays if needed
         out_img = qimage.copy()
 
-        # Draw detections and segmentation masks
+        # TEMPORARILY HIDDEN: YOLO visual overlay disabled.
+        # Detection inference and statistics remain active.
         if detections:
             painter = QPainter(out_img)
             painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -643,7 +853,7 @@ class YoloPipeline(QObject):
 
             painter.end()
 
-        self.frame_ready.emit(out_img)
+        output_signal.emit(out_img)
         self.stats_updated.emit(stats)
 
     # ── Control Toggles ───────────────────────────────────────────
