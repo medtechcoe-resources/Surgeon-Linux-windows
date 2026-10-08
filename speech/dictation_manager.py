@@ -58,7 +58,7 @@ class DictationManager:
         self.is_paused = True
 
         if self.worker:
-            self.worker.stop()
+            self.worker.stop(finalize=False)
             self.worker = None
 
     def resume(self) -> bool:
@@ -87,7 +87,7 @@ class DictationManager:
             return
 
         if self.worker:
-            self.worker.stop()
+            self.worker.stop(finalize=True)
             self.worker = None
 
         self.is_running = False

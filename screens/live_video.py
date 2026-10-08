@@ -367,10 +367,10 @@ class _FullscreenVideoViewer(QWidget):
         # Dictation overlay for fullscreen Assisted View.
         self.dictation_overlay = _DictationOverlay(parent=self.canvas)
         self.dictation_overlay.setGeometry(
-            10,
-            10,
-            600,
-            180,
+            20,
+            max(20, self.canvas.height() - 220 - 20),
+            max(300, int(self.canvas.width() * 0.48)),
+            220,
         )
         self.dictation_overlay.raise_()
 
@@ -420,14 +420,13 @@ class _FullscreenVideoViewer(QWidget):
             canvas_height = self.canvas.height()
 
             overlay_width = min(
-                max(300, int(canvas_width * 0.27)),
+                max(300, int(canvas_width * 0.48)),
                 max(300, canvas_width - 40),
             )
-            overlay_height = 180
-
+            overlay_height = 220
             self.dictation_overlay.setGeometry(
-                max(20, canvas_width - overlay_width - 20),
-                max(20, (canvas_height - overlay_height) // 2),
+                20,
+                max(20, canvas_height - overlay_height - 20),
                 overlay_width,
                 overlay_height,
             )
@@ -2165,10 +2164,10 @@ class LiveVideoScreen(QWidget):
         # This is a child overlay and does not consume layout space.
         self.dictation_overlay = _DictationOverlay(parent=self.canvas)
         self.dictation_overlay.setGeometry(
-            max(20, self.canvas.width() - max(300, int(self.canvas.width() * 0.27)) - 20),
-            max(20, (self.canvas.height() - 180) // 2),
-            max(300, int(self.canvas.width() * 0.27)),
-            180,
+            20,
+            max(20, self.canvas.height() - 220 - 20),
+            max(300, int(self.canvas.width() * 0.48)),
+            220,
         )
         self.dictation_overlay.raise_()
 
@@ -2739,7 +2738,8 @@ class LiveVideoScreen(QWidget):
             # Keep the large 3x overlay readable inside the compact 180px card.
             # Show only the current live transcription instead of stacking
             # multiple previous lines.
-            overlay_text = str(text).strip()
+            words = str(text).strip().split()
+            overlay_text = " ".join(words[-5:])
             self.dictation_overlay.set_status("LISTENING")
             self.dictation_overlay.set_text(overlay_text)
 
@@ -2769,11 +2769,13 @@ class LiveVideoScreen(QWidget):
         if hasattr(self, "dictation_overlay"):
             # The overlay uses 3x text, so keep only the newest completed
             # dictation segment visible to prevent vertical clipping.
-            final_overlay_text = (
+            final_source_text = (
                 str(self._dictation_segments[-1].text).strip()
                 if self._dictation_segments
                 else "Listening..."
             )
+            final_words = final_source_text.split()
+            final_overlay_text = " ".join(final_words[-5:])
             self.dictation_overlay.set_status("LISTENING")
             self.dictation_overlay.set_text(final_overlay_text)
 
@@ -2849,14 +2851,13 @@ class LiveVideoScreen(QWidget):
             canvas_height = self.canvas.height()
 
             # Larger compact overlay: approximately 2x the original size.
-            overlay_width = max(300, int(canvas_width * 0.27))
+            overlay_width = max(300, int(canvas_width * 0.48))
             overlay_width = min(overlay_width, max(300, canvas_width - 40))
 
-            overlay_height = 180
-
+            overlay_height = 220
             self.dictation_overlay.setGeometry(
-                max(20, canvas_width - overlay_width - 20),
-                max(20, (canvas_height - overlay_height) // 2),
+                20,
+                max(20, canvas_height - overlay_height - 20),
                 overlay_width,
                 overlay_height,
             )
